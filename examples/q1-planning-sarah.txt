@@ -1,0 +1,26 @@
+Meeting with Sarah about Q1 Planning
+December 30, 2025 at 2:00 PM
+
+Sarah: Hi Edd, thanks for meeting today. I wanted to discuss our Q1 priorities.
+
+Edd: Sure, happy to chat. What's on your mind?
+
+Sarah: Well, I think we should focus on three main areas. First, we need to finalize the product roadmap. Second, we should start hiring for the engineering team. And third, we need to set up our CI/CD pipeline.
+
+Edd: Those all sound good. For the roadmap, I can work on that and have a draft by next Friday.
+
+Sarah: Perfect. And I'll take the lead on hiring. I already have a couple of candidates in mind.
+
+Edd: Great. What about the CI/CD pipeline?
+
+Sarah: I was hoping you could handle that as well?
+
+Edd: Sure, I can do that. I'll need about two weeks though.
+
+Sarah: That works. One question though - should we use GitHub Actions or Jenkins?
+
+Edd: Let's discuss that in our next meeting. I need to research the options a bit more.
+
+Sarah: Sounds good. So to summarize, you'll work on the roadmap and CI/CD, I'll handle hiring, and we'll decide on the CI/CD tooling later.
+
+Edd: Perfect, that's the plan.
