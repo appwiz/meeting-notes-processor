@@ -131,9 +131,13 @@ def process_transcript(input_file, target='copilot', model=None):
     date_str = get_date_from_file(input_file)
     temp_org_filename = f"temp-{date_str}.org"
     
-    # Run summarization first (with temp filename)
+    # Get basename for input file (relative to WORKSPACE_DIR)
+    input_basename = os.path.basename(input_file)
+    input_relative = os.path.join('inbox', input_basename)
+    
+    # Run summarization (files are relative to WORKSPACE_DIR)
     print(f"  Generating summary...")
-    final_prompt = PROMPT_TEMPLATE.format(input_file=input_file, output_file=temp_org_filename)
+    final_prompt = PROMPT_TEMPLATE.format(input_file=input_relative, output_file=temp_org_filename)
 
     if target == 'copilot':
         model_name = model if model else 'claude-sonnet-4.5'
@@ -144,7 +148,7 @@ def process_transcript(input_file, target='copilot', model=None):
             '--model', model_name
         ]
         try:
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = subprocess.run(command, capture_output=True, text=True, cwd=WORKSPACE_DIR)
             if result.returncode != 0:
                 print(f"  Error in summarization: {result.stderr}")
                 return False, None, None
@@ -160,7 +164,7 @@ def process_transcript(input_file, target='copilot', model=None):
             '--model', model_name
         ]
         try:
-            result = subprocess.run(command, input=final_prompt, capture_output=True, text=True)
+            result = subprocess.run(command, input=final_prompt, capture_output=True, text=True, cwd=WORKSPACE_DIR)
             if result.returncode != 0:
                 print(f"  Error in summarization: {result.stderr}")
                 return False, None, None
@@ -168,14 +172,15 @@ def process_transcript(input_file, target='copilot', model=None):
             print(f"  Error running gemini: {e}")
             return False, None, None
     
-    # Check if org file was created
-    if not os.path.exists(temp_org_filename):
-        print(f"  Error: Expected org file {temp_org_filename} was not created")
+    # Check if org file was created (in WORKSPACE_DIR)
+    temp_org_path = os.path.join(WORKSPACE_DIR, temp_org_filename)
+    if not os.path.exists(temp_org_path):
+        print(f"  Error: Expected org file {temp_org_path} was not created")
         return False, None, None
     
     # Extract slug from the generated org file
     print("  Extracting slug from summary...")
-    slug = extract_slug_from_org(temp_org_filename)
+    slug = extract_slug_from_org(temp_org_path)
     base_name = f"{date_str}-{slug}"
     print(f"  Using filename base: {base_name}")
     
@@ -184,7 +189,7 @@ def process_transcript(input_file, target='copilot', model=None):
     org_path = ensure_unique_filename(NOTES_DIR, base_name, 'org')
     
     # Move files to their final locations
-    shutil.move(temp_org_filename, org_path)
+    shutil.move(temp_org_path, org_path)
     print(f"  Created: {org_path}")
     
     shutil.move(input_file, transcript_path)

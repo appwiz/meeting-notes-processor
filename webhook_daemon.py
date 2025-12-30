@@ -124,9 +124,13 @@ def git_commit_and_push(filepath, title):
         repo_path = Path(REPO_DIR).resolve()
         github_token = os.environ.get('GITHUB_TOKEN')
         
-        # Git add the file
+        # Convert filepath to absolute path, then make it relative to the repo
+        file_abs_path = Path(filepath).resolve()
+        file_rel_path = file_abs_path.relative_to(repo_path)
+        
+        # Git add the file using the relative path from within the repo
         result = subprocess.run(
-            ['git', 'add', filepath],
+            ['git', 'add', str(file_rel_path)],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -138,7 +142,7 @@ def git_commit_and_push(filepath, title):
             logger.error(error_msg)
             return False, error_msg
         
-        logger.info(f"Git added: {filepath}")
+        logger.info(f"Git added: {file_rel_path}")
         
         # Git commit
         commit_message = GIT_COMMIT_TEMPLATE.format(title=title)
