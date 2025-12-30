@@ -1,0 +1,16 @@
+{
+  "name": "meeting-notes",
+  "version": "1.0.0",
+  "description": "Meeting notes summarization project",
+  "private": true,
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@google/gemini-cli": "^0.22.4",
+    "@github/copilot": "^0.0.372"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

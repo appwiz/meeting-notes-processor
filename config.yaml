@@ -1,0 +1,19 @@
+# Webhook Daemon Configuration for Separated Repositories
+
+# HTTP Server Settings
+server:
+  host: 127.0.0.1
+  port: 9876
+
+# Directory Settings
+# Paths to the data repository (meeting-notes)
+directories:
+  inbox: ../meeting-notes/inbox              # Path to data repo inbox
+  repository: ../meeting-notes               # Path to data repo root
+
+# Git Settings
+git:
+  auto_commit: true
+  auto_push: true
+  repository_url: "github.com/ewilderj/meeting-notes.git"  # Data repository URL
+  commit_message_template: "Add transcript: {title}"
