@@ -28,61 +28,19 @@ INBOX_DIR = os.path.join(WORKSPACE_DIR, 'inbox')
 TRANSCRIPTS_DIR = os.path.join(WORKSPACE_DIR, 'transcripts')
 NOTES_DIR = os.path.join(WORKSPACE_DIR, 'notes')
 
-PROMPT_TEMPLATE = """Summarize the transcript in the input file. Include:
+# Default prompt file location (relative to script directory)
+DEFAULT_PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prompt.txt')
 
-- A single sentence TL;DR up top
-- A list of agreed-upon actions, with who will do them
-- Any open questions left unresolved
-- A brief summary of the discussion
-- org-mode property drawer for :PARTICIPANTS:, :TOPIC:, and :SLUG:
-- the tags :note:transcribed:
 
-The :SLUG: property should be a 2-5 word hyphenated slug that describes the
-main topic (e.g., "quarterly-planning", "ai-coaching-discussion"). Use only
-lowercase letters, numbers, and hyphens. This will be used for the filename.
+def load_prompt_template(prompt_file: str) -> str:
+    """Load the prompt template from a file."""
+    if not os.path.exists(prompt_file):
+        print(f"Error: Prompt file not found: {prompt_file}")
+        sys.exit(1)
+    
+    with open(prompt_file, 'r', encoding='utf-8') as f:
+        return f.read()
 
-Format this in org format, as used with org-mode in emacs.
-
-The user's name is Edd, which you may hear as Ed. His full name is
-Edd Wilder-James.
-
-Do not vary from the org-mode formatting. You can use emoji but do not
-create invalid org files. Use the hyphen - for bulleted lists, not
-asterisk. use `- [ ]` to denote actions. Here's an example format:
-
-<example>
-** Meeting with April :note:transcribed:
-[2025-12-02 Tue 22:32]
-:PROPERTIES:
-:PARTICIPANTS: April, Edd
-:TOPIC: A test meeting.
-:SLUG: test-meeting-april
-:END:
-
-TL;DR: Test notes about what happened.
-
-*** Actions
-
-- [ ] do the first thing
-- [ ] do the second thing
-
-*** Open questions
-
-- first open question
-- next open question
-
-*** Summary
-
-Brief summary of the discussion.
-</example>
-
-For the meeting timestamp just use the first timestamp in the meeting
-transcription if there is a date and time specified. If there is no date,
-use the timestamp of the input file.
-Do not include citations to the transcript anywhere.
-Ensure each line is wrapped to max 80 columns.
-Input file is {input_file}.
-Write the resulting org content to {output_file}"""
 
 def extract_slug_from_org(org_file_path):
     """Extract the slug from the org file's property drawer."""
@@ -123,7 +81,7 @@ def ensure_unique_filename(directory, base_name, extension):
             return filepath
         counter += 1
 
-def process_transcript(input_file, target='copilot', model=None):
+def process_transcript(input_file, target='copilot', model=None, prompt_template=None):
     """Process a single transcript: summarize, extract slug, and organize files."""
     print(f"\nProcessing: {input_file}")
     
@@ -137,7 +95,7 @@ def process_transcript(input_file, target='copilot', model=None):
     
     # Run summarization (files are relative to WORKSPACE_DIR)
     print(f"  Generating summary...")
-    final_prompt = PROMPT_TEMPLATE.format(input_file=input_relative, output_file=temp_org_filename)
+    final_prompt = prompt_template.format(input_file=input_relative, output_file=temp_org_filename)
 
     if target == 'copilot':
         model_name = model if model else 'claude-sonnet-4.5'
@@ -251,7 +209,7 @@ def git_commit_changes(inbox_files, transcript_files, org_files):
         print(f"  Error during git operations: {e}")
         return False
 
-def process_inbox(target='copilot', model=None, use_git=False):
+def process_inbox(target='copilot', model=None, use_git=False, prompt_template=None):
     """Process all transcript files in the inbox directory."""
     inbox_dir = INBOX_DIR
     
@@ -282,7 +240,7 @@ def process_inbox(target='copilot', model=None, use_git=False):
     
     for transcript_file in transcript_files:
         try:
-            result = process_transcript(transcript_file, target, model)
+            result = process_transcript(transcript_file, target, model, prompt_template)
             if result[0]:  # Success
                 successful += 1
                 processed_inbox_files.append(transcript_file)
@@ -316,10 +274,15 @@ def run_summarization():
     parser.add_argument('--target', choices=['copilot', 'gemini'], default='copilot', 
                         help='The CLI tool to use (copilot or gemini). Default is copilot.')
     parser.add_argument('--model', help='The model to use. Defaults to claude-sonnet-4.5 for copilot and gemini-3-flash-preview for gemini.')
+    parser.add_argument('--prompt', default=DEFAULT_PROMPT_FILE,
+                        help=f'Path to the prompt template file. Default: prompt.txt')
     parser.add_argument('--git', action='store_true',
                         help='Perform git operations: rm processed inbox files, add new files, and commit. For use in automation/CI.')
     
     args = parser.parse_args()
+    
+    # Load prompt template
+    prompt_template = load_prompt_template(args.prompt)
     
     # Ensure required directories exist
     for directory in ['inbox', 'transcripts', 'notes']:
@@ -328,7 +291,7 @@ def run_summarization():
             print(f"Created {directory}/ directory")
     
     # Process all transcripts in inbox
-    process_inbox(target=args.target, model=args.model, use_git=args.git)
+    process_inbox(target=args.target, model=args.model, use_git=args.git, prompt_template=prompt_template)
 
 if __name__ == "__main__":
     run_summarization()

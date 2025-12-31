@@ -54,10 +54,10 @@ This tool processes meeting transcripts from any source—MacWhisper, Zoom, Team
 │                                   └──────────────────┴──────────────────┘   │
 │         │                                   │                  │            │
 │         ▼                                   ▼                  ▼            │
-│   ┌───────────┐                      ┌───────────┐      ┌───────────┐      │
-│   │  Local    │                      │  Local    │      │  GitHub   │      │
-│   │Processing │                      │Processing │      │  Actions  │      │
-│   └───────────┘                      └───────────┘      └───────────┘      │
+│   ┌───────────┐                      ┌───────────┐      ┌───────────┐       │
+│   │  Local    │                      │  Local    │      │  GitHub   │       │
+│   │Processing │                      │Processing │      │  Actions  │       │
+│   └───────────┘                      └───────────┘      └───────────┘       │
 │                                                                             │
 │   Also: GitHub Actions on push (no daemon, cloud processing)                │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -177,7 +177,30 @@ uv run run_summarization.py [OPTIONS]
 --target copilot    # Use GitHub Copilot CLI (default)
 --target gemini     # Use Google Gemini CLI
 --model MODEL       # Specific model (e.g., claude-opus-4.5, gpt-5.2, gemini-2.0-flash-exp)
+--prompt FILE       # Custom prompt template (default: prompt.txt)
 --git               # Commit results to git (for automation)
+```
+
+### Customizing the Prompt
+
+The AI summarization prompt is stored in `prompt.txt`. Edit this file to customize:
+
+- Output format and sections
+- What information to extract (actions, decisions, questions, etc.)
+- Your name and how it appears in transcripts
+- Org-mode formatting preferences
+
+The prompt uses `{input_file}` and `{output_file}` placeholders which are filled in at runtime.
+
+**Example customizations:**
+
+```bash
+# Use a different prompt file
+uv run run_summarization.py --prompt my-custom-prompt.txt
+
+# Keep separate prompts for different meeting types
+uv run run_summarization.py --prompt prompts/standup.txt
+uv run run_summarization.py --prompt prompts/planning.txt
 ```
 
 ### Batch Processing

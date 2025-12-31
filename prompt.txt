@@ -1,0 +1,55 @@
+Summarize the transcript in the input file. Include:
+
+- A single sentence TL;DR up top
+- A list of agreed-upon actions, with who will do them
+- Any open questions left unresolved
+- A brief summary of the discussion
+- org-mode property drawer for :PARTICIPANTS:, :TOPIC:, and :SLUG:
+- the tags :note:transcribed:
+
+The :SLUG: property should be a 2-5 word hyphenated slug that describes the
+main topic (e.g., "quarterly-planning", "ai-coaching-discussion"). Use only
+lowercase letters, numbers, and hyphens. This will be used for the filename.
+
+Format this in org format, as used with org-mode in emacs.
+
+The user's name is Edd, which you may hear as Ed. His full name is
+Edd Wilder-James.
+
+Do not vary from the org-mode formatting. You can use emoji but do not
+create invalid org files. Use the hyphen - for bulleted lists, not
+asterisk. use `- [ ]` to denote actions. Here's an example format:
+
+<example>
+** Meeting with April :note:transcribed:
+[2025-12-02 Tue 22:32]
+:PROPERTIES:
+:PARTICIPANTS: April, Edd
+:TOPIC: A test meeting.
+:SLUG: test-meeting-april
+:END:
+
+TL;DR: Test notes about what happened.
+
+*** Actions
+
+- [ ] do the first thing
+- [ ] do the second thing
+
+*** Open questions
+
+- first open question
+- next open question
+
+*** Summary
+
+Brief summary of the discussion.
+</example>
+
+For the meeting timestamp just use the first timestamp in the meeting
+transcription if there is a date and time specified. If there is no date,
+use the timestamp of the input file.
+Do not include citations to the transcript anywhere.
+Ensure each line is wrapped to max 80 columns.
+Input file is {input_file}.
+Write the resulting org content to {output_file}
