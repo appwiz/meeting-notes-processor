@@ -163,7 +163,7 @@ User selects which LLM to use via command-line argument or configuration, provid
 - ⏳ Keep the local data repo current via safe `git pull` semantics
 - ⏳ Optionally trigger GitHub Actions via `workflow_dispatch` when configured
 - ⏳ Optionally run a local command hook when new data arrives
-- ⏳ Consider renaming `webhook_daemon.py` to reflect broader responsibilities
+- ✅ Renamed `webhook_daemon.py` to `meetingnotesd.py` to reflect broader responsibilities
 
 #### Phase 6: Enhancement (Future)
 - ⏳ Add duplicate detection
@@ -232,7 +232,7 @@ MacWhisper sends simple JSON:
 
 ### Technical Specification
 
-#### Webhook Daemon (`webhook_daemon.py`)
+#### Meeting Notes Daemon (`meetingnotesd.py`)
 
 **Responsibilities:**
 - Receive HTTP POST from MacWhisper
@@ -451,7 +451,7 @@ cd meeting-notes-processor
 WORKSPACE_DIR=../my-meeting-notes uv run run_summarization.py
 
 # Run webhook daemon
-GH_TOKEN=xxx uv run webhook_daemon.py
+GH_TOKEN=xxx uv run meetingnotesd.py
 ```
 
 #### GitHub Actions

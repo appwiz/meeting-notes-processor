@@ -72,7 +72,7 @@ def send_to_webhook(filepath, webhook_url="http://localhost:9876/webhook"):
         
     except requests.exceptions.ConnectionError:
         print("Error: Could not connect to webhook daemon.")
-        print("Make sure it's running: uv run webhook_daemon.py")
+        print("Make sure it's running: uv run meetingnotesd.py")
         return False
     except Exception as e:
         print(f"Error sending request: {e}")

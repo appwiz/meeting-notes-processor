@@ -24,17 +24,17 @@ Scripts in this project use **PEP 723 inline script metadata** to declare depend
 
 ```bash
 # Same-repository setup
-uv run webhook_daemon.py
+uv run meetingnotesd.py
 uv run run_summarization.py
 
 # Separated-repository setup (from processor repo)
 WORKSPACE_DIR=../meeting-notes uv run run_summarization.py
 
 # Run as background daemon
-uv run webhook_daemon.py &
+uv run meetingnotesd.py &
 
 # With environment variables
-GITHUB_TOKEN=xxx uv run webhook_daemon.py
+GITHUB_TOKEN=xxx uv run meetingnotesd.py
 ```
 
 ### Inline Script Dependencies (PEP 723)
@@ -68,13 +68,13 @@ uv pip install --system package-name
 
 **Same-repository setup:**
 - **Run the summarization**: `uv run run_summarization.py`
-- **Run webhook daemon**: `uv run webhook_daemon.py`
-- **Run daemon with git push**: `GH_TOKEN=xxx uv run webhook_daemon.py &`
+- **Run webhook daemon**: `uv run meetingnotesd.py`
+- **Run daemon with git push**: `GH_TOKEN=xxx uv run meetingnotesd.py &`
 - **Test webhook**: `curl -X POST http://localhost:9876/webhook -H "Content-Type: application/json" -d '{"title": "Test", "transcript": "Content"}'`
 
 **Separated-repository setup:**
 - **Run the summarization**: `WORKSPACE_DIR=../meeting-notes uv run run_summarization.py`
-- **Run webhook daemon**: Configure `config.yaml` with paths to data repo, then `uv run webhook_daemon.py`
+- **Run webhook daemon**: Configure `config.yaml` with paths to data repo, then `uv run meetingnotesd.py`
 - **GitHub Actions**: Uses workflow from `.github/workflows/process-transcripts-separated.yml`
 
 ## Configuration

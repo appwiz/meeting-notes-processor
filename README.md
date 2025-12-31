@@ -69,9 +69,7 @@ Edit `config.yaml` to point to your data repository:
 
 ```yaml
 # config.yaml
-directories:
-  inbox: ../my-meeting-notes/inbox
-  repository: ../my-meeting-notes
+data_repo: ../my-meeting-notes
 
 git:
   repository_url: "github.com/YOUR_USERNAME/my-meeting-notes.git"
@@ -127,10 +125,10 @@ Now when you push transcripts to `inbox/`, they're automatically processed!
 
 ## Webhook Integration (MacWhisper, etc.)
 
-For real-time processing as transcripts arrive, run the webhook daemon:
+For real-time processing as transcripts arrive, run the daemon:
 
 ```bash
-uv run webhook_daemon.py
+uv run meetingnotesd.py
 ```
 
 Configure your transcription tool to POST to `http://localhost:9876/webhook`:
@@ -143,6 +141,21 @@ Configure your transcription tool to POST to `http://localhost:9876/webhook`:
 ```
 
 The daemon writes to `inbox/` and optionally commits/pushes to trigger automation.
+
+### Always-On Agent Mode (Phase 5)
+
+The daemon can also act as an always-on “agent” for your data repo:
+- Ensures the data repo is checked out (optional auto-clone)
+- Runs safe syncs (`git pull --ff-only`) on startup and before processing webhooks
+- Optionally triggers a GitHub Actions `workflow_dispatch`
+- Optionally runs a local command hook when new commits arrive
+
+These behaviors are configured in `config.yaml` under `sync`, `github.workflow_dispatch`, and `hooks`.
+
+**Sync-only smoke test:**
+```bash
+uv run meetingnotesd.py --sync-once
+```
 
 **Test it:**
 ```bash
@@ -188,14 +201,14 @@ uv run run_summarization.py
 --git                 # Commit and push results automatically (for CI/CD)
 ```
 
-### Webhook Daemon
+### Meeting Notes Daemon
 
 ```bash
 # Start daemon (separated repos, configured via config.yaml)
-uv run webhook_daemon.py
+uv run meetingnotesd.py
 
 # With GitHub push enabled
-GH_TOKEN=xxx uv run webhook_daemon.py
+uv run meetingnotesd.py
 
 # Test endpoint
 curl -X POST http://localhost:9876/webhook \
@@ -211,7 +224,7 @@ uv run test_webhook.py examples/q1-planning-sarah.txt
 ```
 Processor Repository (meeting-notes-processor/):
 ├── run_summarization.py       # Main processing script
-├── webhook_daemon.py           # HTTP webhook receiver
+├── meetingnotesd.py              # HTTP webhook receiver + repo agent
 ├── test_webhook.py             # Webhook testing tool
 ├── config.yaml                 # Configuration for separated repos
 ├── examples/                   # Sample transcripts
@@ -292,9 +305,7 @@ server:
   host: 127.0.0.1
   port: 9876
 
-directories:
-  inbox: ../my-meeting-notes/inbox
-  repository: ../my-meeting-notes
+data_repo: ../my-meeting-notes
 
 git:
   auto_commit: true
