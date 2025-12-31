@@ -1,55 +1,82 @@
 # Meeting Notes Processor
 
-Automatically transform meeting transcripts into organized, searchable org-mode notes using AI. Drop a transcript in, get structured summaries with action items, participants, and smart categorization.
+Automatically transform meeting transcripts into organized, searchable org-mode notes using AI.
 
-## What This Does
+Drop a transcript in, get structured summaries with action items, participants, and smart categorization.
 
-Have meeting transcripts piling up? This tool:
-- **Summarizes** transcripts using AI (Claude, GPT-5, Gemini, etc.)
-- **Extracts** action items, decisions, and open questions
-- **Organizes** with meaningful filenames based on content, not timestamps
-- **Formats** as org-mode files compatible with Emacs, Obsidian, and other tools
-- **Automates** the entire pipeline via GitHub Actions or webhook
+## Table of Contents
 
-Perfect for processing transcripts from MacWhisper, Zoom, Teams, Google Meet, or any text-based recording tool.
+- [Overview](#overview)
+- [Requirements](#requirements)
+- [Setup](#setup)
+  - [1. Create Your Data Repository](#1-create-your-data-repository)
+  - [2. Clone the Processor](#2-clone-the-processor)
+- [Manual Processing](#manual-processing)
+- [Automated Processing with meetingnotesd](#automated-processing-with-meetingnotesd)
+  - [Standalone Mode](#standalone-mode-local-processing)
+  - [Relay Mode](#relay-mode-cloud-processing-via-github-actions)
+  - [Daemon Configuration Reference](#daemon-configuration-reference)
+- [GitHub Actions Setup](#github-actions-setup)
+- [Output Format](#output-format)
+- [Command Reference](#command-reference)
+- [Troubleshooting](#troubleshooting)
 
-**AI Model Support:** Use any model from GitHub Copilot (Claude, GPT-5, etc.) or Google Gemini. Adding support for other AI backends is straightforward—see the extensibility note in Requirements.
+---
 
-## Architecture
+## Overview
 
-**Recommended Setup: Separated Repositories**
+This tool processes meeting transcripts from any source—MacWhisper, Zoom, Teams, Google Meet, or plain text files—and produces:
 
-Keep your code and meeting data in separate repositories for clean version history, independent access controls, and better organization:
+- **Summarized notes** in org-mode format with TL;DR, action items, decisions, and open questions
+- **Smart filenames** based on content (e.g., `20251230-q1-planning-discussion.org`)
+- **Organized archives** with original transcripts preserved
 
-- **Code repository** (this repo): Processing scripts, configuration, workflows
-- **Data repository** (yours): Meeting transcripts and notes (inbox/, transcripts/, notes/)
+**AI backends supported:** GitHub Copilot (Claude, GPT-4o, etc.) or Google Gemini. See [Requirements](#requirements).
 
-This separation means:
-- ✅ Your meeting data stays in its own private repo
-- ✅ Code updates don't clutter your notes history  
-- ✅ You can grant different access levels to each repo
-- ✅ Faster clone/sync of the processor code
+**Architecture:** We recommend keeping this processor code separate from your meeting data:
 
-**Alternative: Single Repository**
-For personal use, you can also run everything in one repo with code and data together. See "Single Repository Setup" below.
+```
+~/projects/
+├── meeting-notes-processor/   # This repo (code)
+└── my-meeting-notes/          # Your repo (data)
+    ├── inbox/                 # Drop transcripts here
+    ├── transcripts/           # Processed originals
+    └── notes/                 # AI-generated summaries
+```
 
-## Quick Start (Separated Repositories)
+This separation keeps your notes history clean and lets you update the processor independently. Teams can share a data repo while each member runs their own processor.
+
+---
+
+## Requirements
+
+- **Python 3.11+** with [uv](https://docs.astral.sh/uv/) package manager
+- **Node.js 22+** with npm
+- **AI Backend** (choose one):
+  - **GitHub Copilot CLI**: `npm install` (included in package.json)
+    - Requires GitHub Copilot subscription
+    - Run `npx @gitbub/copilot auth` to authenticate locally
+  - **Google Gemini CLI**: `npm install -g @google/gemini-cli`
+    - Requires Google AI API key
+
+---
+
+## Setup
 
 ### 1. Create Your Data Repository
 
-Create a new repository for your meeting notes:
-
 ```bash
-mkdir my-meeting-notes
-cd my-meeting-notes
+mkdir my-meeting-notes && cd my-meeting-notes
 git init
 
-# Create directory structure
 mkdir -p inbox transcripts notes
 touch inbox/.gitkeep transcripts/.gitkeep notes/.gitkeep
 
-git add .
-git commit -m "Initial structure"
+git add . && git commit -m "Initial structure"
+```
+
+Optionally push to GitHub for backup/sharing:
+```bash
 git remote add origin https://github.com/YOUR_USERNAME/my-meeting-notes.git
 git push -u origin main
 ```
@@ -63,37 +90,220 @@ cd meeting-notes-processor
 npm install
 ```
 
-### 3. Configure the Processor
+---
 
-Edit `config.yaml` to point to your data repository:
+## Manual Processing
 
-```yaml
-# config.yaml
-data_repo: ../my-meeting-notes
-
-git:
-  repository_url: "github.com/YOUR_USERNAME/my-meeting-notes.git"
-```
-
-### 4. Process Transcripts
-
-Add a transcript to your data repo's inbox:
+The simplest way to use this tool: drop transcripts in `inbox/`, run the script.
 
 ```bash
-cp transcript.txt ../my-meeting-notes/inbox/
-```
+# Copy a transcript to your data repo's inbox
+cp meeting-recording.txt ../my-meeting-notes/inbox/
 
-Process it:
-
-```bash
+# Process it
 WORKSPACE_DIR=../my-meeting-notes uv run run_summarization.py
 ```
 
-The result appears in `../my-meeting-notes/notes/` and `../my-meeting-notes/transcripts/` with a meaningful filename like `20251230-q1-planning-discussion.org`
+Results appear in your data repo:
+- `transcripts/20251230-q1-planning.txt` — renamed original
+- `notes/20251230-q1-planning.org` — AI-generated summary
 
-### 5. Automate with GitHub Actions (Optional)
+### Options
 
-Copy the workflow template to your data repository:
+```bash
+uv run run_summarization.py [OPTIONS]
+
+--target copilot    # Use GitHub Copilot CLI (default)
+--target gemini     # Use Google Gemini CLI
+--model MODEL       # Specific model (e.g., claude-sonnet-4, gemini-2.0-flash-exp)
+--git               # Commit results to git (for automation)
+```
+
+### Batch Processing
+
+Drop multiple transcripts in `inbox/`—they'll all be processed in one run.
+
+---
+
+## Automated Processing with meetingnotesd
+
+For hands-free processing, run the `meetingnotesd` daemon. It:
+
+- Receives webhooks from MacWhisper (or any HTTP client)
+- Writes transcripts to your data repo's inbox
+- Processes them automatically
+
+The daemon supports two modes:
+
+| Mode | Processing Location | Best For |
+|------|--------------------| ---------|
+| **Standalone** | Local machine | Single user, privacy, simplicity |
+| **Relay** | GitHub Actions | Teams, audit trails, cloud compute |
+
+### Standalone Mode (Local Processing)
+
+The simpler option—everything runs on your machine.
+
+**1. Configure `config.yaml`:**
+
+```yaml
+data_repo: ../my-meeting-notes
+
+git:
+  auto_commit: true
+  auto_push: true   # Optional: push to remote
+  repository_url: "github.com/USER/my-meeting-notes.git"
+  branch: main
+
+processing:
+  standalone:
+    enabled: true
+    command: "uv run run_summarization.py --git"
+```
+
+**2. Start the daemon:**
+
+```bash
+uv run meetingnotesd.py
+```
+
+**3. Send a transcript** (e.g., configure MacWhisper to POST here):
+
+```bash
+curl -X POST http://localhost:9876/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Team Standup", "transcript": "Full transcript text..."}'
+```
+
+The daemon will:
+1. Write the transcript to `inbox/`
+2. Run `run_summarization.py` locally
+3. Commit results to git (and push if configured)
+
+### Relay Mode (Cloud Processing via GitHub Actions)
+
+Offload AI processing to GitHub's servers. Useful for teams or when you want processing to continue even when your laptop is closed.
+
+**1. Configure `config.yaml`:**
+
+```yaml
+data_repo: ../my-meeting-notes
+
+git:
+  auto_commit: true
+  auto_push: true
+  repository_url: "github.com/USER/my-meeting-notes.git"
+  branch: main
+
+github:
+  workflow_dispatch:
+    enabled: true
+    repo: "USER/my-meeting-notes"
+    workflow: "process-transcripts.yml"
+    ref: "main"
+
+processing:
+  standalone:
+    enabled: false
+```
+
+**2. Set up GitHub Actions** in your data repo (see [GitHub Actions Setup](#github-actions-setup))
+
+**3. Export your token and start the daemon:**
+
+```bash
+export GH_TOKEN=ghp_xxxxxxxxxxxx
+uv run meetingnotesd.py
+```
+
+The daemon will:
+1. Write the transcript to `inbox/`
+2. Commit and push to your data repo
+3. Trigger the GitHub Actions workflow via `workflow_dispatch`
+4. GitHub Actions runs the summarization and commits results
+
+### Daemon Configuration Reference
+
+Full `config.yaml` options:
+
+```yaml
+# HTTP server
+server:
+  host: 127.0.0.1
+  port: 9876
+
+# Path to your data repository
+data_repo: ../my-meeting-notes
+
+# Git operations
+git:
+  auto_commit: true
+  auto_push: true
+  repository_url: "github.com/USER/my-meeting-notes.git"
+  commit_message_template: "Add transcript: {title}"
+  branch: main
+  remote: origin
+
+# Keep local repo in sync (pull before processing)
+sync:
+  enabled: true
+  on_startup: true
+  before_accepting_webhooks: true
+  poll_interval_seconds: 1800    # Background polling (0 = disabled)
+  ff_only: true
+
+# STANDALONE MODE: process locally
+processing:
+  standalone:
+    enabled: false
+    command: "uv run run_summarization.py --git"
+    working_directory: "."
+    timeout_seconds: 300
+
+# RELAY MODE: trigger GitHub Actions
+github:
+  workflow_dispatch:
+    enabled: false
+    repo: "USER/my-meeting-notes"
+    workflow: "process-transcripts.yml"
+    ref: "main"
+    inputs: {}
+
+# Optional: run a command when background sync pulls new commits
+hooks:
+  on_new_commits:
+    enabled: false
+    command: "echo 'New commits arrived'"
+    working_directory: "."
+    timeout_seconds: 600
+```
+
+### Daemon Command-Line Options
+
+```bash
+uv run meetingnotesd.py [OPTIONS]
+
+--sync-once    # Sync repo and exit (useful for testing)
+--debug        # Enable verbose logging
+```
+
+### Testing the Daemon
+
+```bash
+# Health check
+curl http://localhost:9876/
+
+# Send a test transcript
+uv run send_transcript.py examples/q1-planning-sarah.txt
+```
+
+---
+
+## GitHub Actions Setup
+
+For relay mode, or to auto-process transcripts pushed to your data repo:
+
+**1. Copy the workflow template to your data repo:**
 
 ```bash
 mkdir -p ../my-meeting-notes/.github/workflows
@@ -101,250 +311,130 @@ cp workflows-templates/process-transcripts-data-repo.yml \
    ../my-meeting-notes/.github/workflows/process-transcripts.yml
 ```
 
-Edit the workflow to use your processor repo URL, then configure secrets and permissions:
+**2. Create a fine-grained Personal Access Token:**
 
-**GitHub Actions Setup:**
-1. In your data repository settings, go to Settings → Secrets and variables → Actions
-2. Add a new repository secret named `GH_TOKEN`
-3. Create a fine-grained Personal Access Token with:
-   - **Repository access**: Your data repository
-   - **Permissions**: 
-     - Contents (Read and write)
-     - Copilot Requests (if using Copilot CLI)
+Go to [GitHub Settings → Developer settings → Fine-grained tokens](https://github.com/settings/tokens?type=beta):
+- **Repository access**: Select your data repository
+- **Permissions**:
+  - Contents: Read and write
+  - Actions: Read and write (required for workflow_dispatch)
+  - Copilot Requests (if using Copilot CLI in Actions)
 
-**For GitHub Copilot CLI in Actions:**
-- The workflow automatically uses the `GH_TOKEN` secret for authentication
-- No additional Copilot setup needed in GitHub Actions
-- The token provides both git operations and Copilot CLI authentication
+**3. Add the token as a repository secret:**
 
-**For local development with Copilot:**
-- Run `npx @github/copilot auth` to authenticate
-- Requires active Copilot subscription or GitHub Enterprise access
+In your data repo: Settings → Secrets and variables → Actions → New repository secret
+- Name: `GH_TOKEN`
+- Value: Your token
 
-Now when you push transcripts to `inbox/`, they're automatically processed!
-
-## Webhook Integration (MacWhisper, etc.)
-
-For real-time processing as transcripts arrive, run the daemon:
+**4. Commit and push the workflow:**
 
 ```bash
-uv run meetingnotesd.py
+cd ../my-meeting-notes
+git add .github/workflows/process-transcripts.yml
+git commit -m "Add processing workflow"
+git push
 ```
 
-Configure your transcription tool to POST to `http://localhost:9876/webhook`:
+Now transcripts pushed to `inbox/` (or triggered via `workflow_dispatch`) will be processed automatically.
 
-```json
-{
-  "title": "Team Standup",
-  "transcript": "Full transcript text..."
-}
-```
-
-The daemon writes to `inbox/` and optionally commits/pushes to trigger automation.
-
-### Always-On Agent Mode (Phase 5)
-
-The daemon can also act as an always-on “agent” for your data repo:
-- Ensures the data repo is checked out (optional auto-clone)
-- Runs safe syncs (`git pull --ff-only`) on startup and before processing webhooks
-- Optionally triggers a GitHub Actions `workflow_dispatch`
-- Optionally runs a local command hook when new commits arrive
-
-These behaviors are configured in `config.yaml` under `sync`, `github.workflow_dispatch`, and `hooks`.
-
-**Sync-only smoke test:**
-```bash
-uv run meetingnotesd.py --sync-once
-```
-
-**Test it:**
-```bash
-uv run test_webhook.py examples/q1-planning-sarah.txt
-```
-
-## Single Repository Setup
-
-If you prefer to keep everything in one place:
-
-1. **Clone this repository**
-   ```bash
-   git clone https://github.com/ewilderj/meeting-notes-processor.git my-meeting-notes
-   cd my-meeting-notes
-   npm install
-   ```
-
-2. **Process transcripts directly**
-   ```bash
-   cp transcript.txt inbox/
-   uv run run_summarization.py
-   ```
-
-No `WORKSPACE_DIR` needed—everything runs in the current directory.
-
-## Command Reference
-
-### Process Transcripts
-
-```bash
-# Separated repositories
-WORKSPACE_DIR=../my-meeting-notes uv run run_summarization.py
-
-# Single repository
-uv run run_summarization.py
-
-# Options
---target copilot      # Use GitHub Copilot (default, requires @github/copilot CLI)
---target gemini       # Use Google Gemini (requires @google/gemini-cli)
---model MODEL_NAME    # Specify model:
-                      #   Copilot: claude-sonnet-4.5, gpt-5.2, etc.
-                      #   Gemini: gemini-3.0-flash-preview, gemini-2.5-pro, etc.
---git                 # Commit and push results automatically (for CI/CD)
-```
-
-### Meeting Notes Daemon
-
-```bash
-# Start daemon (separated repos, configured via config.yaml)
-uv run meetingnotesd.py
-
-# With GitHub push enabled
-uv run meetingnotesd.py
-
-# Test endpoint
-curl -X POST http://localhost:9876/webhook \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Meeting Title", "transcript": "Transcript text..."}'
-
-# Or use the test script
-uv run test_webhook.py examples/q1-planning-sarah.txt
-```
-
-## Directory Structure
-
-```
-Processor Repository (meeting-notes-processor/):
-├── run_summarization.py       # Main processing script
-├── meetingnotesd.py              # HTTP webhook receiver + repo agent
-├── test_webhook.py             # Webhook testing tool
-├── config.yaml                 # Configuration for separated repos
-├── examples/                   # Sample transcripts
-│   ├── q1-planning-sarah.txt
-│   ├── dunder-mifflin-sales.txt
-│   └── mad-men-heinz.txt
-└── workflows-templates/        # GitHub Actions templates
-    └── process-transcripts-data-repo.yml
-
-Data Repository (my-meeting-notes/):
-├── inbox/                      # Drop transcripts here (.txt, .md)
-├── transcripts/                # Processed originals (YYYYMMDD-slug.txt)
-├── notes/                      # Org-mode summaries (YYYYMMDD-slug.org)
-└── .github/workflows/          # Optional: automated processing
-    └── process-transcripts.yml
-```
+---
 
 ## Output Format
 
-Each transcript generates two files with content-based filenames:
+Each transcript produces two files:
 
-**`transcripts/20251230-q1-planning-discussion.txt`** - Original transcript
+**`transcripts/20251230-q1-planning.txt`** — Original transcript (renamed)
 
-**`notes/20251230-q1-planning-discussion.org`** - Org-mode summary with:
-- **TL;DR** - One-sentence summary
-- **Actions** - Checkbox list of agreed-upon tasks with owners
-- **Open Questions** - Unresolved items
-- **Summary** - Detailed discussion overview
-- **Metadata** - Participants, topic, slug in property drawer
+**`notes/20251230-q1-planning.org`** — Org-mode summary:
 
-Example:
 ```org
-** Meeting with Sarah :note:transcribed:
+** Q1 Planning Discussion :meeting:transcribed:
 [2025-12-30 Mon 14:00]
 :PROPERTIES:
 :PARTICIPANTS: Sarah, Edd
 :TOPIC: Q1 Planning
-:SLUG: q1-planning-discussion
+:SLUG: q1-planning
 :END:
 
-TL;DR: Discussed Q1 priorities including product roadmap, hiring, and CI/CD.
+TL;DR: Agreed on product roadmap priorities and hiring plan for Q1.
 
 *** Actions
 - [ ] Edd: Draft product roadmap by Friday
-- [ ] Sarah: Interview engineering candidates
+- [ ] Sarah: Schedule candidate interviews
+
+*** Open Questions
+- Budget allocation for new tooling
+
+*** Summary
+Discussion covered three main areas...
 ```
 
-## Requirements
+---
 
-- **Python 3.11+** with `uv` package manager ([install uv](https://docs.astral.sh/uv/))
-- **Node.js 22+** with npm
-- **AI Backend**: Choose one:
-  - **GitHub Copilot CLI** (`npm install -g @github/copilot`)
-    - Access to any Copilot-supported model (Claude Sonnet 4.5, GPT-4o, etc.)
-    - Specify with `--model` flag (e.g., `--model claude-sonnet-4.5`)
-    - Requires GitHub Copilot subscription
-  - **Google Gemini CLI** (`npm install -g @google/gemini-cli`)
-    - Access to any Gemini model (Gemini 2.0 Flash, Gemini 1.5 Pro, etc.)
-    - Specify with `--model` flag (e.g., `--model gemini-2.0-flash-exp`)
-    - Requires Google AI API key
+## Command Reference
 
-**For GitHub Copilot (local development):**
-- Authenticate with `npx @github/copilot auth`
-- Requires active Copilot subscription or GitHub Enterprise access
+### run_summarization.py
 
-**For GitHub Actions:**
-- Copilot CLI authenticates automatically using the `GH_TOKEN` secret
-- Token must be a fine-grained PAT with Contents: write and Copilot Requests permissions
+```bash
+WORKSPACE_DIR=../data-repo uv run run_summarization.py [OPTIONS]
 
-**Extensibility:** Adding support for other AI backends (OpenAI API, Anthropic API, local models, etc.) is straightforward. The processor uses a simple plugin pattern in `run_summarization.py`—see the `process_transcript()` function for the `target` parameter implementation.
-
-## Configuration
-
-### config.yaml (Separated Repositories)
-
-```yaml
-server:
-  host: 127.0.0.1
-  port: 9876
-
-data_repo: ../my-meeting-notes
-
-git:
-  auto_commit: true
-  auto_push: true
-  repository_url: "github.com/YOUR_USERNAME/my-meeting-notes.git"
-  commit_message_template: "Add transcript: {title}"
+Options:
+  --target copilot|gemini   AI backend (default: copilot)
+  --model MODEL             Specific model name
+  --git                     Commit results to git
 ```
 
-### Environment Variables
+### meetingnotesd.py
 
-- `WORKSPACE_DIR` - Path to data repository (for separated setup)
-- `GH_TOKEN` - GitHub personal access token with fine-grained PAT permissions:
-  - Contents: write (for git operations)
-  - Copilot Requests (if using Copilot CLI)
-  - Used by both webhook daemon (local) and GitHub Actions (cloud)
+```bash
+uv run meetingnotesd.py [OPTIONS]
+
+Options:
+  --sync-once    Sync repo and exit
+  --debug        Verbose logging
+```
+
+### send_transcript.py
+
+```bash
+uv run send_transcript.py <transcript-file> [webhook-url]
+
+# Examples:
+uv run send_transcript.py examples/q1-planning-sarah.txt
+uv run send_transcript.py transcript.txt http://localhost:9876/webhook
+```
+
+---
 
 ## Troubleshooting
 
-**"Permission denied" when reading transcripts**
-- Ensure `WORKSPACE_DIR` points to the correct location
-- Check file permissions in inbox directory
+**"WORKSPACE_DIR not set" or wrong paths**
+- For separated repos, always set `WORKSPACE_DIR` to point to your data repo
+- Paths in `config.yaml` are relative to the processor directory
 
-**Git operations failing**
-- Verify `git config user.name` and `user.email` are set
-- For separated repos, ensure `WORKSPACE_DIR` is set correctly
-- Check that paths in `config.yaml` are relative to processor directory
-
-**Webhook not receiving requests**
-- Confirm daemon is running: `curl http://localhost:9876/`
-- Check firewall settings
-- Verify MacWhisper/sender is configured with correct URL
+**Git push failing**
+- Check that `git config user.name` and `user.email` are set
+- Verify your `GH_TOKEN` has Contents: write permission
+- For relay mode, ensure Actions: write permission for workflow_dispatch
 
 **AI summarization errors**
-- Ensure Copilot or Gemini CLI is installed and authenticated
-- Check that transcripts contain actual content (not just titles)
-- Verify model name if using `--model` flag
+- Run `npx @github/copilot auth` to authenticate Copilot locally
+- Check that transcripts have actual content (not just a title)
+- Try a different model with `--model`
+
+**Webhook not receiving requests**
+- Verify daemon is running: `curl http://localhost:9876/`
+- Ensure sender (eg MacWhisper) has the correct URL
+
+**workflow_dispatch not triggering**
+- Verify `GH_TOKEN` has Actions: write permission
+- Check the workflow file exists in your data repo
+- Use `--debug` flag to see detailed error messages
+
+---
 
 ## More Information
 
-- [AGENTS.md](AGENTS.md) - Developer documentation and AI agent instructions
-- [PRD.md](PRD.md) - Detailed product requirements and implementation phases
-- [examples/](examples/) - Sample transcripts for testing
+- [AGENTS.md](AGENTS.md) — Instructions for AI coding agents working on this project
+- [PRD.md](PRD.md) — Product requirements and implementation details
+- [examples/](examples/) — Sample transcripts for testing

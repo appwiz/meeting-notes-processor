@@ -489,7 +489,7 @@ Created three realistic example transcripts in `examples/`:
 - `mad-men-heinz.txt` - Advertising brainstorm (Mad Men characters)
 
 **5. Testing Utility**
-- `test_webhook.py` - Sends example transcripts to webhook daemon
+- `send_transcript.py` - Sends transcripts to webhook daemon
 - Uses PEP 723 inline script metadata for dependencies
 - Simplifies testing and demonstration
 

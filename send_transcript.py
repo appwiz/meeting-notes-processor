@@ -11,10 +11,10 @@ Test script for webhook daemon
 Sends a transcript file to the webhook daemon for processing.
 
 Usage:
-    uv run test_webhook.py <transcript_file>
-    
+    uv run send_transcript.py <transcript_file>
+
 Example:
-    uv run test_webhook.py examples/q1-planning-sarah.txt
+    uv run send_transcript.py examples/q1-planning-sarah.txt
 """
 
 import sys
@@ -81,12 +81,12 @@ def send_to_webhook(filepath, webhook_url="http://localhost:9876/webhook"):
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: uv run test_webhook.py <transcript_file>")
+        print("Usage: uv run send_transcript.py <transcript_file>")
         print()
         print("Examples:")
-        print("  uv run test_webhook.py examples/q1-planning-sarah.txt")
-        print("  uv run test_webhook.py examples/dunder-mifflin-sales.txt")
-        print("  uv run test_webhook.py examples/mad-men-heinz.txt")
+        print("  uv run send_transcript.py examples/q1-planning-sarah.txt")
+        print("  uv run send_transcript.py examples/dunder-mifflin-sales.txt")
+        print("  uv run send_transcript.py examples/mad-men-heinz.txt")
         sys.exit(1)
     
     filepath = sys.argv[1]
