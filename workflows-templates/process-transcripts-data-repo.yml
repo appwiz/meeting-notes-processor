@@ -87,3 +87,9 @@ jobs:
         env:
           WORKSPACE_DIR: ../meeting-notes
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Push changes
+        if: steps.check_inbox.outputs.skip != 'true'
+        run: |
+          cd meeting-notes
+          git push
