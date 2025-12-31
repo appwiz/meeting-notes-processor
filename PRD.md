@@ -56,7 +56,9 @@ Meeting transcripts accumulate rapidly but lack organization and context, making
 
 - **FR-5.1**: System can run as a long-lived daemon/service (always-on) with clear start/stop/restart behavior
 - **FR-5.2**: Daemon syncs the configured data repository on startup and before processing new inbound work (e.g., `git pull --ff-only`)
-- **FR-5.3**: Daemon can optionally trigger a GitHub Actions `workflow_dispatch` in the data repository when new transcripts are added (configurable)
+- **FR-5.3**: Daemon supports two operating modes:
+  - **Relay mode**: Commits incoming transcripts and triggers a GitHub Actions `workflow_dispatch` for cloud-based processing
+  - **Standalone mode**: Processes transcripts locally by running the summarization script, then pushes results to remote
 - **FR-5.4**: Daemon can optionally run a user-configured command hook when new data is detected after a sync (configurable)
 - **FR-5.5**: Daemon logs sync/dispatch/hook outcomes clearly and fails safely (no partial writes or silent drops)
 - **FR-5.6**: If the configured data-repo working directory does not contain a git checkout yet, daemon can bootstrap it by cloning the data repo before syncing/processing
@@ -158,12 +160,14 @@ User selects which LLM to use via command-line argument or configuration, provid
 - ✅ Unified token naming to `GH_TOKEN` for consistency
 - ✅ Created example transcripts and test tooling
 
-#### Phase 5: Always-On Agent/Daemon (Planned)
-- ⏳ Run continuously as a long-lived service (daemonization guidance)
-- ⏳ Keep the local data repo current via safe `git pull` semantics
-- ⏳ Optionally trigger GitHub Actions via `workflow_dispatch` when configured
-- ⏳ Optionally run a local command hook when new data arrives
+#### Phase 5: Always-On Agent/Daemon (Complete)
+- ✅ Run continuously as a long-lived service (daemonization guidance)
+- ✅ Keep the local data repo current via safe `git pull` semantics
+- ✅ **Relay mode**: Trigger GitHub Actions via `workflow_dispatch` for cloud processing
+- ✅ **Standalone mode**: Process transcripts locally and push results
+- ✅ Optionally run a local command hook when new data arrives
 - ✅ Renamed `webhook_daemon.py` to `meetingnotesd.py` to reflect broader responsibilities
+- ✅ Auto-clone data repo if working directory doesn't exist
 
 #### Phase 6: Enhancement (Future)
 - ⏳ Add duplicate detection
@@ -289,40 +293,96 @@ git:
   commit_message_template: "Add transcript: {title}"
 ```
 
-**Phase 5 config sketch (proposed additions for always-on behavior):**
+**Phase 5: Operating Modes**
+
+The daemon (`meetingnotesd`) supports two operating modes, configured via `config.yaml`:
+
+**Relay Mode** (cloud processing)
+- Daemon receives webhook, writes transcript to inbox, commits and pushes
+- Triggers GitHub Actions `workflow_dispatch` for cloud-based summarization
+- Processing happens in GitHub Actions runner
+- Best for: teams, audit trails, when cloud resources are preferred
+
+**Standalone Mode** (local processing)
+- Daemon receives webhook, writes transcript to inbox
+- Runs `run_summarization.py` locally to process transcripts
+- Commits all results (transcripts, notes) and pushes to remote
+- Best for: single-user, privacy-sensitive, offline-capable setups
 
 ```yaml
-# config.yaml (proposed additions)
+# config.yaml - Relay Mode Example
+data_repo: ../meeting-notes
 
-# Keep the local data repo up to date before writing/committing new work.
+git:
+  auto_commit: true
+  auto_push: true
+  repository_url: "github.com/USER/meeting-notes.git"
+  branch: main
+
+sync:
+  enabled: true
+  on_startup: true
+
+# Relay mode: trigger cloud workflow after pushing transcript
+github:
+  workflow_dispatch:
+    enabled: true
+    repo: "USER/meeting-notes"
+    workflow: "process-transcripts.yml"
+    ref: "main"
+
+# Standalone mode disabled
+processing:
+  standalone:
+    enabled: false
+```
+
+```yaml
+# config.yaml - Standalone Mode Example
+data_repo: ../meeting-notes
+
+git:
+  auto_commit: true
+  auto_push: true
+  repository_url: "github.com/USER/meeting-notes.git"
+  branch: main
+
+sync:
+  enabled: true
+  on_startup: true
+
+# Relay mode disabled
+github:
+  workflow_dispatch:
+    enabled: false
+
+# Standalone mode: process locally after receiving webhook
+processing:
+  standalone:
+    enabled: true
+    command: "uv run run_summarization.py --git"
+    working_directory: "."  # relative to processor repo, or absolute
+    timeout_seconds: 300
+```
+
+**Additional config options (both modes):**
+
+```yaml
+# Keep the local data repo up to date
 sync:
   enabled: true
   on_startup: true
   before_accepting_webhooks: true
-  checkout_if_missing:
-    enabled: true
-    repo_url: "https://github.com/OWNER/REPO.git" # data repo clone URL
-    branch: "main"
-  pull:
-    remote: origin
-    branch: main
-    ff_only: true
+  poll_interval_seconds: 60  # background sync (0 = disabled)
+  ff_only: true
 
-# Optionally trigger a GitHub Actions workflow when new transcripts land.
-github:
-  workflow_dispatch:
-    enabled: false
-    repo: "OWNER/REPO"              # e.g. "ewilderj/meeting-notes"
-    workflow: "process-transcripts.yml" # workflow file name or workflow id
-    ref: "main"
-    inputs: {}
-
-# Optionally run a command when a sync brings in new commits.
+# Run a command when background sync pulls new commits
 hooks:
   on_new_commits:
     enabled: false
-    command: "uv run run_summarization.py --git"
-    working_directory: "."          # typically the data repo root
+    command: "echo 'New commits arrived'"
+    working_directory: "."
+    timeout_seconds: 600
 ```
 
 ### Implementation Tasks (Phase 3)

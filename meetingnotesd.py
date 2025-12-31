@@ -118,6 +118,12 @@ class RepoAgent:
         self.hook_working_directory = _get_nested(config, ['hooks', 'on_new_commits', 'working_directory'], '.')
         self.hook_timeout_seconds = int(_get_nested(config, ['hooks', 'on_new_commits', 'timeout_seconds'], 600))
 
+        # Standalone mode: process transcripts locally instead of dispatching to GitHub Actions
+        self.standalone_enabled = bool(_get_nested(config, ['processing', 'standalone', 'enabled'], False))
+        self.standalone_command = _get_nested(config, ['processing', 'standalone', 'command'], 'uv run run_summarization.py --git')
+        self.standalone_working_directory = _get_nested(config, ['processing', 'standalone', 'working_directory'], '.')
+        self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 300))
+
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._sync_thread: threading.Thread | None = None
@@ -219,6 +225,59 @@ class RepoAgent:
             stderr = (result.stderr or '').strip()
             return False, f"hook failed: {stderr or 'non-zero exit'}"
         return True, "hook completed"
+
+    def run_standalone_processing(self) -> tuple[bool, str]:
+        """Run local summarization in standalone mode."""
+        if not self.standalone_enabled:
+            return False, "standalone processing disabled"
+        if not self.standalone_command:
+            return False, "standalone enabled but no command configured"
+
+        # Resolve working directory (relative to script location or absolute)
+        if os.path.isabs(self.standalone_working_directory):
+            working_dir = Path(self.standalone_working_directory)
+        else:
+            # Relative to the directory containing this script (processor repo)
+            script_dir = Path(__file__).parent.resolve()
+            working_dir = (script_dir / self.standalone_working_directory).resolve()
+
+        try:
+            working_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        # Set WORKSPACE_DIR to point to the data repo
+        env = os.environ.copy()
+        env['WORKSPACE_DIR'] = str(self._repo_path())
+
+        args = shlex.split(self.standalone_command)
+        logger.info(f"Running standalone processing: {args} (cwd={working_dir}, WORKSPACE_DIR={env['WORKSPACE_DIR']})")
+
+        try:
+            result = subprocess.run(
+                args,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=self.standalone_timeout_seconds,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"standalone processing timed out after {self.standalone_timeout_seconds}s"
+        except Exception as e:
+            return False, f"standalone processing failed: {e}"
+
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            stdout = (result.stdout or '').strip()
+            # Include some output for debugging
+            detail = stderr or stdout or 'non-zero exit'
+            if len(detail) > 200:
+                detail = detail[:200] + '...'
+            return False, f"standalone processing failed: {detail}"
+
+        logger.info("Standalone processing completed successfully")
+        return True, "standalone processing completed"
 
     def maybe_dispatch_workflow(self, *, reason: str) -> tuple[bool, str]:
         if not self.workflow_dispatch_enabled:
@@ -375,20 +434,26 @@ def generate_filename(title):
 @app.route('/', methods=['GET'])
 def health_check():
     """Health check endpoint."""
+    processing_mode = 'standalone' if agent.standalone_enabled else 'relay'
     return jsonify({
         'status': 'ok',
         'service': 'meetingnotesd',
         'inbox_dir': agent.inbox_dir,
         'repository': agent.repo_dir,
         'port': agent.port,
+        'processing_mode': processing_mode,
         'sync': {
             'enabled': agent.sync_enabled,
             'poll_interval_seconds': agent.sync_poll_interval_seconds,
         },
-        'workflow_dispatch': {
-            'enabled': agent.workflow_dispatch_enabled,
-            'repo': agent.workflow_dispatch_repo,
-            'workflow': agent.workflow_dispatch_workflow,
+        'standalone': {
+            'enabled': agent.standalone_enabled,
+            'command': agent.standalone_command if agent.standalone_enabled else None,
+        },
+        'relay': {
+            'workflow_dispatch_enabled': agent.workflow_dispatch_enabled,
+            'repo': agent.workflow_dispatch_repo if agent.workflow_dispatch_enabled else None,
+            'workflow': agent.workflow_dispatch_workflow if agent.workflow_dispatch_enabled else None,
         },
     }), 200
 
@@ -493,12 +558,24 @@ def webhook():
                     response_data['warning'] = 'File saved but git operation failed'
                     logger.warning(f"Git operation failed but file was saved: {git_message}")
                 else:
-                    dispatch_ok, dispatch_msg = agent.maybe_dispatch_workflow(reason=f"webhook:{filename}")
-                    response_data['workflow_dispatch'] = {
-                        'enabled': agent.workflow_dispatch_enabled,
-                        'success': dispatch_ok,
-                        'message': dispatch_msg,
-                    }
+                    # Choose processing mode: standalone (local) or relay (workflow dispatch)
+                    if agent.standalone_enabled:
+                        proc_ok, proc_msg = agent.run_standalone_processing()
+                        response_data['processing'] = {
+                            'mode': 'standalone',
+                            'success': proc_ok,
+                            'message': proc_msg,
+                        }
+                    else:
+                        dispatch_ok, dispatch_msg = agent.maybe_dispatch_workflow(reason=f"webhook:{filename}")
+                        response_data['processing'] = {
+                            'mode': 'relay',
+                            'workflow_dispatch': {
+                                'enabled': agent.workflow_dispatch_enabled,
+                                'success': dispatch_ok,
+                                'message': dispatch_msg,
+                            }
+                        }
             else:
                 response_data['git'] = {
                     'enabled': False,

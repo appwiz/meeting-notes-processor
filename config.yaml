@@ -1,4 +1,10 @@
 # Webhook Daemon Configuration for Separated Repositories
+#
+# Two processing modes are supported:
+#   - Relay mode: Push transcript to repo, trigger GitHub Actions workflow
+#   - Standalone mode: Process transcripts locally, push results
+#
+# Enable ONE of: github.workflow_dispatch OR processing.standalone
 
 # HTTP Server Settings
 server:
@@ -29,7 +35,8 @@ sync:
   poll_interval_seconds: 1800
   ff_only: true
 
-# Optional: trigger a workflow_dispatch in the data repo.
+# RELAY MODE: trigger a workflow_dispatch in the data repo for cloud processing.
+# Disable this if using standalone mode.
 github:
   workflow_dispatch:
     enabled: true
@@ -37,6 +44,15 @@ github:
     workflow: "process-transcripts.yml"
     ref: "main"
     inputs: {}
+
+# STANDALONE MODE: process transcripts locally instead of using GitHub Actions.
+# Enable this and disable workflow_dispatch above for local processing.
+processing:
+  standalone:
+    enabled: false
+    command: "uv run run_summarization.py --git"
+    working_directory: "."  # Relative to processor repo, or absolute path
+    timeout_seconds: 300
 
 # Optional: run a command when `git pull` brings in new commits.
 hooks:
