@@ -301,7 +301,7 @@ class RepoAgent:
             return
 
         def _loop():
-            logger.info(f"Background sync enabled (interval={self.sync_poll_interval_seconds}s)")
+            logger.info(f"Background sync started (interval={self.sync_poll_interval_seconds}s)")
             while not self._stop_event.is_set():
                 try:
                     with self._lock:
@@ -519,7 +519,11 @@ def webhook():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Meeting Notes Daemon (meetingnotesd)')
     parser.add_argument('--sync-once', action='store_true', help='Run repo bootstrap/sync once and exit')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
+
+    # Configure logging based on --debug flag
+    logging.getLogger().setLevel(logging.DEBUG if args.debug else logging.INFO)
 
     logger.info(f"Starting meetingnotesd on {agent.host}:{agent.port}")
     logger.info(f"Inbox directory: {agent.inbox_dir}")

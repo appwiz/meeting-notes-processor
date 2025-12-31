@@ -26,7 +26,7 @@ sync:
   enabled: true
   on_startup: true
   before_accepting_webhooks: true
-  poll_interval_seconds: 0
+  poll_interval_seconds: 1800
   ff_only: true
 
 # Optional: trigger a workflow_dispatch in the data repo.
@@ -42,6 +42,6 @@ github:
 hooks:
   on_new_commits:
     enabled: false
-    command: "uv run run_summarization.py --git"
+    command: "touch /tmp/ISEEIT"
     working_directory: "."
     timeout_seconds: 600
