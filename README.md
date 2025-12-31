@@ -31,7 +31,7 @@ This tool processes meeting transcripts from any source—MacWhisper, Zoom, Team
 - **Smart filenames** based on content (e.g., `20251230-q1-planning-discussion.org`)
 - **Organized archives** with original transcripts preserved
 
-**AI backends supported:** GitHub Copilot (Claude, GPT-4o, etc.) or Google Gemini. See [Requirements](#requirements).
+**AI backends supported:** GitHub Copilot (Claude Opus 4.5, GPT 5.2, etc.) or Google Gemini. See [Requirements](#requirements).
 
 **Architecture:** We recommend keeping this processor code separate from your meeting data:
 
@@ -115,7 +115,7 @@ uv run run_summarization.py [OPTIONS]
 
 --target copilot    # Use GitHub Copilot CLI (default)
 --target gemini     # Use Google Gemini CLI
---model MODEL       # Specific model (e.g., claude-sonnet-4, gemini-2.0-flash-exp)
+--model MODEL       # Specific model (e.g., claude-opus-4.5, gpt-5.2, gemini-2.0-flash-exp)
 --git               # Commit results to git (for automation)
 ```
 
@@ -301,7 +301,14 @@ uv run send_transcript.py examples/q1-planning-sarah.txt
 
 ## GitHub Actions Setup
 
-For relay mode, or to auto-process transcripts pushed to your data repo:
+You can trigger GitHub Actions processing in two ways:
+
+| Trigger | How it works | Best for |
+|---------|--------------|----------|
+| **Push-based** | Workflow runs when files are pushed to `inbox/` | Simple setup, no daemon needed |
+| **Daemon-based** | `meetingnotesd` triggers workflow via `workflow_dispatch` | Real-time webhook processing |
+
+### Common Setup (Both Approaches)
 
 **1. Copy the workflow template to your data repo:**
 
@@ -326,16 +333,52 @@ In your data repo: Settings → Secrets and variables → Actions → New reposi
 - Name: `GH_TOKEN`
 - Value: Your token
 
-**4. Commit and push the workflow:**
+### Push-Based Trigger (No Daemon)
 
-```bash
-cd ../my-meeting-notes
-git add .github/workflows/process-transcripts.yml
-git commit -m "Add processing workflow"
-git push
+Edit the workflow file to enable the push trigger:
+
+```yaml
+# In .github/workflows/process-transcripts.yml
+on:
+  push:
+    paths:
+      - 'inbox/**'
+  workflow_dispatch:  # Keep this for manual runs
 ```
 
-Now transcripts pushed to `inbox/` (or triggered via `workflow_dispatch`) will be processed automatically.
+Now just push transcripts to your data repo:
+
+```bash
+cp transcript.txt ../my-meeting-notes/inbox/
+cd ../my-meeting-notes
+git add inbox/ && git commit -m "Add transcript" && git push
+```
+
+The workflow runs automatically when files land in `inbox/`.
+
+### Daemon-Based Trigger (workflow_dispatch)
+
+Keep the workflow file as-is (push trigger commented out). The daemon triggers processing via the GitHub API.
+
+Configure `meetingnotesd` for relay mode:
+
+```yaml
+# config.yaml
+github:
+  workflow_dispatch:
+    enabled: true
+    repo: "USER/my-meeting-notes"
+    workflow: "process-transcripts.yml"
+```
+
+Start the daemon with your token:
+
+```bash
+export GH_TOKEN=ghp_xxxxxxxxxxxx
+uv run meetingnotesd.py
+```
+
+When the daemon receives a webhook, it pushes the transcript and triggers the workflow.
 
 ---
 
