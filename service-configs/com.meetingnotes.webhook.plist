@@ -23,6 +23,18 @@
         <key>GH_TOKEN</key>
         <string>ghp_CHANGEME</string>
 
+        <!-- PATH must include node (for GitHub Copilot CLI) -->
+        <!-- If using nvm, find node path with: dirname "$(which node)" -->
+        <!-- Example nvm path: /Users/CHANGEME/.nvm/versions/node/v22.x.x/bin -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/CHANGEME/.nvm/versions/node/v22.x.x/bin</string>
+
+        <!-- Prevent git from prompting for credentials (would hang the daemon) -->
+        <key>GIT_TERMINAL_PROMPT</key>
+        <string>0</string>
+        <key>GIT_ASKPASS</key>
+        <string></string>
+
         <!-- Optional: specify config file path (defaults to ./config.yaml) -->
         <!-- <key>WEBHOOK_CONFIG</key> -->
         <!-- <string>/path/to/config.yaml</string> -->
@@ -43,11 +55,11 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
-    <!-- Logging -->
+    <!-- Logging - create directory first: mkdir -p ~/Library/Logs/meetingnotes-webhook -->
     <key>StandardOutPath</key>
-    <string>/tmp/meetingnotes-webhook.log</string>
+    <string>/Users/CHANGEME/Library/Logs/meetingnotes-webhook/webhook.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/meetingnotes-webhook.err</string>
+    <string>/Users/CHANGEME/Library/Logs/meetingnotes-webhook/webhook.err</string>
 
     <!-- Nice level (optional, lower priority) -->
     <key>Nice</key>
