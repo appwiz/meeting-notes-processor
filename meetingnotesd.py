@@ -271,10 +271,10 @@ class RepoAgent:
         if result.returncode != 0:
             stderr = (result.stderr or '').strip()
             stdout = (result.stdout or '').strip()
-            # Include some output for debugging
+            # Include output for debugging
             detail = stderr or stdout or 'non-zero exit'
-            if len(detail) > 200:
-                detail = detail[:200] + '...'
+            if len(detail) > 500:
+                detail = detail[:500] + '...'
             return False, f"standalone processing failed: {detail}"
 
         # Log stdout for debugging even on success
