@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meetingnotes.webhook</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Path to uv - find with: which uv -->
+        <string>/Users/CHANGEME/.local/bin/uv</string>
+        <string>run</string>
+        <string>webhook_daemon.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <!-- Path to your meeting-notes-processor repo -->
+    <string>/Users/CHANGEME/git/meeting-notes-processor</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Required for git push operations -->
+        <key>GH_TOKEN</key>
+        <string>ghp_CHANGEME</string>
+
+        <!-- Optional: specify config file path (defaults to ./config.yaml) -->
+        <!-- <key>WEBHOOK_CONFIG</key> -->
+        <!-- <string>/path/to/config.yaml</string> -->
+    </dict>
+
+    <!-- Run at load (boot/login) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep alive - restart if it crashes -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Restart throttle: wait 10 seconds before restarting after crash -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/tmp/meetingnotes-webhook.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/meetingnotes-webhook.err</string>
+
+    <!-- Nice level (optional, lower priority) -->
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>

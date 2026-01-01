@@ -8,3 +8,4 @@ __pycache__/
 .uv/
 .env
 SYSTEM-REVIEW.md
+config.yaml

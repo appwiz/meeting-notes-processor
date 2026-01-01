@@ -380,6 +380,12 @@ uv run meetingnotesd.py [OPTIONS]
 --debug        # Enable verbose logging
 ```
 
+### Running as a System Service
+
+For production use, run the daemon as a proper system service so it starts automatically on boot and restarts on crash.
+
+See [service-configs/README.md](service-configs/README.md) for detailed setup instructions.
+
 ### Testing the Daemon
 
 ```bash

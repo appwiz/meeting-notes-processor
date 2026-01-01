@@ -1,0 +1,41 @@
+[Unit]
+Description=Meeting Notes Webhook Daemon
+Documentation=https://github.com/ewilderj/meeting-notes-processor
+After=network.target
+
+[Service]
+Type=simple
+
+# CHANGEME: Set your username
+User=CHANGEME
+
+# CHANGEME: Path to your meeting-notes-processor repo
+WorkingDirectory=/home/CHANGEME/git/meeting-notes-processor
+
+# CHANGEME: Path to uv (find with: which uv)
+# CHANGEME: Set your GitHub token
+ExecStart=/home/CHANGEME/.local/bin/uv run webhook_daemon.py
+Environment="GH_TOKEN=ghp_CHANGEME"
+
+# Optional: load secrets from a separate file instead of embedding in this unit
+# EnvironmentFile=/etc/meetingnotes-webhook.env
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+
+# Logging (goes to journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meetingnotes-webhook
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/CHANGEME/git/meeting-notes-processor
+ReadWritePaths=/home/CHANGEME/git/meeting-notes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

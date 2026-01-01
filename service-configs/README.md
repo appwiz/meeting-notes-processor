@@ -1,0 +1,104 @@
+# Service Configuration Files
+
+This directory contains configuration files to run the webhook daemon as a proper system service.
+
+## macOS (launchd)
+
+1. **Edit the plist file** to set correct paths:
+   ```bash
+   # Copy and customize
+   cp com.meetingnotes.webhook.plist ~/Library/LaunchAgents/
+   
+   # Edit to set your actual paths and environment
+   nano ~/Library/LaunchAgents/com.meetingnotes.webhook.plist
+   ```
+
+2. **Required customizations:**
+   - `WorkingDirectory`: Path to your processor repo
+   - `GH_TOKEN`: Your GitHub token (for git push)
+   - `WEBHOOK_CONFIG`: Path to your config.yaml (optional, defaults to ./config.yaml)
+
+3. **Load the service:**
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.meetingnotes.webhook.plist
+   ```
+
+4. **Manage the service:**
+   ```bash
+   # Check status
+   launchctl list | grep meetingnotes
+   
+   # Stop
+   launchctl stop com.meetingnotes.webhook
+   
+   # Start
+   launchctl start com.meetingnotes.webhook
+   
+   # Unload completely
+   launchctl unload ~/Library/LaunchAgents/com.meetingnotes.webhook.plist
+   ```
+
+5. **View logs:**
+   ```bash
+   tail -f /tmp/meetingnotes-webhook.log
+   tail -f /tmp/meetingnotes-webhook.err
+   ```
+
+## Linux (systemd)
+
+1. **Edit the service file** to set correct paths:
+   ```bash
+   # Copy and customize
+   sudo cp meetingnotes-webhook.service /etc/systemd/system/
+   
+   # Edit to set your actual paths, user, and environment
+   sudo nano /etc/systemd/system/meetingnotes-webhook.service
+   ```
+
+2. **Required customizations:**
+   - `User`: Your username
+   - `WorkingDirectory`: Path to your processor repo
+   - `Environment="GH_TOKEN=..."`: Your GitHub token
+   - `ExecStart`: Ensure `uv` path is correct (use `which uv` to find it)
+
+3. **Enable and start the service:**
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable meetingnotes-webhook
+   sudo systemctl start meetingnotes-webhook
+   ```
+
+4. **Manage the service:**
+   ```bash
+   # Check status
+   sudo systemctl status meetingnotes-webhook
+   
+   # Stop
+   sudo systemctl stop meetingnotes-webhook
+   
+   # Restart
+   sudo systemctl restart meetingnotes-webhook
+   
+   # Disable autostart
+   sudo systemctl disable meetingnotes-webhook
+   ```
+
+5. **View logs:**
+   ```bash
+   journalctl -u meetingnotes-webhook -f
+   ```
+
+## Environment Variables
+
+Both service configs need these environment variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GH_TOKEN` | Yes (for git push) | GitHub personal access token |
+| `WEBHOOK_CONFIG` | No | Path to config.yaml (defaults to ./config.yaml) |
+
+## Security Notes
+
+- The plist/service files contain your `GH_TOKEN`. Protect file permissions accordingly.
+- On Linux, consider using systemd's `EnvironmentFile=` directive to load secrets from a separate file.
+- The webhook listens on `127.0.0.1:9876` by default (localhost only). Change `server.host` in config.yaml if you need external access.
