@@ -34,7 +34,7 @@ WORKSPACE_DIR=../meeting-notes uv run run_summarization.py
 uv run meetingnotesd.py &
 
 # With environment variables
-GITHUB_TOKEN=xxx uv run meetingnotesd.py
+GH_TOKEN=xxx uv run meetingnotesd.py
 ```
 
 ### Inline Script Dependencies (PEP 723)
@@ -75,7 +75,7 @@ uv pip install --system package-name
 **Separated-repository setup:**
 - **Run the summarization**: `WORKSPACE_DIR=../meeting-notes uv run run_summarization.py`
 - **Run webhook daemon**: Configure `config.yaml` with paths to data repo, then `uv run meetingnotesd.py`
-- **GitHub Actions**: Uses workflow from `.github/workflows/process-transcripts-separated.yml`
+- **GitHub Actions**: Uses workflow from `.github/workflows/process-transcripts.yml` (copy from `workflows-templates/process-transcripts-data-repo.yml`)
 
 ## Configuration
 
@@ -118,7 +118,7 @@ Supports `WORKSPACE_DIR` environment variable:
 Use existing `.github/workflows/process-transcripts.yml`
 
 ### Separated-Repository
-Use `.github/workflows/process-transcripts-separated.yml`:
+Use `workflows-templates/process-transcripts-data-repo.yml` (copy to `.github/workflows/process-transcripts.yml` in the data repo):
 - Workflow lives in **data repo**
 - Checks out both data and processor repos
 - Runs processor with `WORKSPACE_DIR` pointing to data repo

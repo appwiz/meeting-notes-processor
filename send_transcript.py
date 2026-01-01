@@ -80,17 +80,18 @@ def send_to_webhook(filepath, webhook_url="http://localhost:9876/webhook"):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: uv run send_transcript.py <transcript_file>")
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage: uv run send_transcript.py <transcript_file> [webhook_url]")
         print()
         print("Examples:")
         print("  uv run send_transcript.py examples/q1-planning-sarah.txt")
         print("  uv run send_transcript.py examples/dunder-mifflin-sales.txt")
-        print("  uv run send_transcript.py examples/mad-men-heinz.txt")
+        print("  uv run send_transcript.py transcript.txt http://localhost:9876/webhook")
         sys.exit(1)
     
     filepath = sys.argv[1]
-    success = send_to_webhook(filepath)
+    webhook_url = sys.argv[2] if len(sys.argv) == 3 else "http://localhost:9876/webhook"
+    success = send_to_webhook(filepath, webhook_url)
     sys.exit(0 if success else 1)
 
 

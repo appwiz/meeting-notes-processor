@@ -507,6 +507,16 @@ def webhook():
                 'message': 'Transcript cannot be empty'
             }), 400
 
+        # Validate transcript size (256KB limit - covers very long meetings)
+        MAX_TRANSCRIPT_SIZE = 256 * 1024  # 256 KB
+        transcript_size = len(transcript.encode('utf-8'))
+        if transcript_size > MAX_TRANSCRIPT_SIZE:
+            logger.warning(f"Transcript too large ({transcript_size} bytes) for title: {title}")
+            return jsonify({
+                'status': 'error',
+                'message': f'Transcript too large ({transcript_size} bytes). Maximum size is {MAX_TRANSCRIPT_SIZE} bytes (256KB).'
+            }), 413  # 413 Payload Too Large
+
         with agent._lock:
             # Optional sync before accepting new work
             if agent.sync_enabled and agent.sync_before_accepting_webhooks:

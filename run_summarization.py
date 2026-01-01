@@ -28,12 +28,27 @@ INBOX_DIR = os.path.join(WORKSPACE_DIR, 'inbox')
 TRANSCRIPTS_DIR = os.path.join(WORKSPACE_DIR, 'transcripts')
 NOTES_DIR = os.path.join(WORKSPACE_DIR, 'notes')
 
-# Default prompt file location (relative to script directory)
-DEFAULT_PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prompt.txt')
+# Prompt file locations: workspace first, then script directory as fallback
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKSPACE_PROMPT_FILE = os.path.join(WORKSPACE_DIR, 'prompt.txt')
+DEFAULT_PROMPT_FILE = os.path.join(SCRIPT_DIR, 'prompt.txt')
 
 
-def load_prompt_template(prompt_file: str) -> str:
-    """Load the prompt template from a file."""
+def get_default_prompt_file() -> str:
+    """Return the default prompt file path, preferring workspace over script directory."""
+    if os.path.exists(WORKSPACE_PROMPT_FILE):
+        return WORKSPACE_PROMPT_FILE
+    return DEFAULT_PROMPT_FILE
+
+
+def load_prompt_template(prompt_file: str | None = None) -> str:
+    """Load the prompt template from a file.
+    
+    If prompt_file is None, uses get_default_prompt_file() to find the default.
+    """
+    if prompt_file is None:
+        prompt_file = get_default_prompt_file()
+    
     if not os.path.exists(prompt_file):
         print(f"Error: Prompt file not found: {prompt_file}")
         sys.exit(1)
@@ -274,14 +289,14 @@ def run_summarization():
     parser.add_argument('--target', choices=['copilot', 'gemini'], default='copilot', 
                         help='The CLI tool to use (copilot or gemini). Default is copilot.')
     parser.add_argument('--model', help='The model to use. Defaults to claude-sonnet-4.5 for copilot and gemini-3-flash-preview for gemini.')
-    parser.add_argument('--prompt', default=DEFAULT_PROMPT_FILE,
-                        help=f'Path to the prompt template file. Default: prompt.txt')
+    parser.add_argument('--prompt', default=None,
+                        help='Path to the prompt template file. Default: prompt.txt in WORKSPACE_DIR, or script directory as fallback.')
     parser.add_argument('--git', action='store_true',
                         help='Perform git operations: rm processed inbox files, add new files, and commit. For use in automation/CI.')
     
     args = parser.parse_args()
     
-    # Load prompt template
+    # Load prompt template (None means use default lookup logic)
     prompt_template = load_prompt_template(args.prompt)
     
     # Ensure required directories exist

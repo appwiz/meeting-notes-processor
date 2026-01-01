@@ -1,5 +1,5 @@
 {
-  "name": "meeting-notes",
+  "name": "meeting-notes-processor",
   "version": "1.0.0",
   "description": "Meeting notes summarization project",
   "private": true,

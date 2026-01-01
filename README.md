@@ -116,9 +116,9 @@ This separation keeps your notes history clean and lets you update the processor
 - **AI Backend** (choose one):
   - **GitHub Copilot CLI**: `npm install` (included in package.json)
     - Requires GitHub Copilot subscription
-    - Run `npx @gitbub/copilot auth` to authenticate locally
-  - **Google Gemini CLI**: `npm install -g @google/gemini-cli`
-    - Requires Google AI API key
+    - Run once to authenticate interactively, or use a PAT (see later)
+  - **Google Gemini CLI**: `npm install` (included in package.json)
+    - Requires Google AI API key or interactive authentication
 
 ---
 
@@ -177,13 +177,18 @@ uv run run_summarization.py [OPTIONS]
 --target copilot    # Use GitHub Copilot CLI (default)
 --target gemini     # Use Google Gemini CLI
 --model MODEL       # Specific model (e.g., claude-opus-4.5, gpt-5.2, gemini-2.0-flash-exp)
---prompt FILE       # Custom prompt template (default: prompt.txt)
+--prompt FILE       # Custom prompt template (default: see below)
 --git               # Commit results to git (for automation)
 ```
 
 ### Customizing the Prompt
 
-The AI summarization prompt is stored in `prompt.txt`. Edit this file to customize:
+The AI summarization prompt is stored in `prompt.txt`. The script looks for it in this order:
+
+1. **Workspace directory** (`WORKSPACE_DIR/prompt.txt`) — allows per-data-repo customization
+2. **Processor directory** (`prompt.txt` alongside the script) — shared default
+
+Edit the prompt to customize:
 
 - Output format and sections
 - What information to extract (actions, decisions, questions, etc.)
@@ -195,7 +200,10 @@ The prompt uses `{input_file}` and `{output_file}` placeholders which are filled
 **Example customizations:**
 
 ```bash
-# Use a different prompt file
+# Copy prompt to your data repo for customization
+cp prompt.txt ../my-meeting-notes/
+
+# Use an explicit prompt file
 uv run run_summarization.py --prompt my-custom-prompt.txt
 
 # Keep separate prompts for different meeting types
@@ -333,7 +341,7 @@ sync:
   enabled: true
   on_startup: true
   before_accepting_webhooks: true
-  poll_interval_seconds: 1800    # Background polling (0 = disabled)
+  poll_interval_seconds: 1800    # Background polling (0 = disabled); use --debug to verify
   ff_only: true
 
 # STANDALONE MODE: process locally
@@ -475,7 +483,7 @@ Each transcript produces two files:
 **`notes/20251230-q1-planning.org`** — Org-mode summary:
 
 ```org
-** Q1 Planning Discussion :meeting:transcribed:
+** Q1 Planning Discussion :note:transcribed:
 [2025-12-30 Mon 14:00]
 :PROPERTIES:
 :PARTICIPANTS: Sarah, Edd
@@ -545,7 +553,7 @@ uv run send_transcript.py transcript.txt http://localhost:9876/webhook
 - For relay mode, ensure Actions: write permission for workflow_dispatch
 
 **AI summarization errors**
-- Run `npx @github/copilot auth` to authenticate Copilot locally
+- Run `npx @github/copilot` to authenticate Copilot locally
 - Check that transcripts have actual content (not just a title)
 - Try a different model with `--model`
 
