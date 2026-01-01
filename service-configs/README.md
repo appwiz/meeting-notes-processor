@@ -85,6 +85,10 @@ This directory contains configuration files to run the webhook daemon as a prope
 
 5. **View logs:**
    ```bash
+   # Application logs (by syslog identifier)
+   journalctl -t meetingnotes-webhook -f
+   
+   # Service status/lifecycle logs (by unit name)
    journalctl -u meetingnotes-webhook -f
    ```
 
@@ -96,6 +100,47 @@ Both service configs need these environment variables:
 |----------|----------|-------------|
 | `GH_TOKEN` | Yes (for git push) | GitHub personal access token |
 | `WEBHOOK_CONFIG` | No | Path to config.yaml (defaults to ./config.yaml) |
+
+## Git Authentication Setup
+
+The `GH_TOKEN` environment variable is used by the GitHub API (for workflow_dispatch), but **git itself** needs separate configuration to use the token for push/pull operations.
+
+### Problem: SSH vs HTTPS
+
+If your data repo uses SSH (`git@github.com:...`), git will prompt for your SSH key passphrase, which hangs when running as a service.
+
+**Check your remote URL:**
+```bash
+cd /path/to/your/meeting-notes
+git remote -v
+```
+
+### Solution: Use HTTPS with Token
+
+1. **Switch to HTTPS and embed token in URL:**
+   ```bash
+   cd /path/to/your/meeting-notes
+   git remote set-url origin https://YOUR_USERNAME:${GH_TOKEN}@github.com/YOUR_USERNAME/meeting-notes.git
+   ```
+   
+   Replace `YOUR_USERNAME` with your GitHub username and ensure `GH_TOKEN` is set.
+
+2. **Or use a credential helper** (token stays in environment only):
+   ```bash
+   cd /path/to/your/meeting-notes
+   git config credential.helper '!f() { echo "username=YOUR_USERNAME"; echo "password=${GH_TOKEN}"; }; f'
+   ```
+
+### Preventing Auth Prompts
+
+The systemd service includes these settings to prevent git from hanging on auth failures:
+
+```ini
+Environment="GIT_ASKPASS=/bin/true"
+Environment="GIT_TERMINAL_PROMPT=0"
+```
+
+This makes git fail fast instead of waiting for input that will never come.
 
 ## Security Notes
 

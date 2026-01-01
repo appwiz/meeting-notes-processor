@@ -282,12 +282,16 @@ def git_commit_changes(inbox_files, transcript_files, org_files, workspace_dir):
         return False
 
 def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_template=None, debug=False):
-    """Process all transcript files in the inbox directory."""
+    """Process all transcript files in the inbox directory.
+    
+    Returns:
+        tuple: (successful_count, failed_count) or (0, 0) if no files found
+    """
     inbox_dir = paths['inbox']
     
     if not os.path.exists(inbox_dir):
         print(f"Error: {inbox_dir} directory not found.")
-        return
+        return 0, 1  # Count as a failure
     
     # Find all .txt and .md files in inbox
     transcript_files = []
@@ -296,7 +300,7 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     
     if not transcript_files:
         print(f"No transcript files found in {inbox_dir}/")
-        return
+        return 0, 0  # No files is not a failure, but nothing succeeded
     
     print(f"Found {len(transcript_files)} transcript(s) to process")
     
@@ -371,7 +375,17 @@ def run_summarization():
             print(f"Created {dir_path}/ directory")
     
     # Process all transcripts in inbox
-    process_inbox(paths, target=args.target, model=args.model, use_git=args.git, prompt_template=prompt_template, debug=args.debug)
+    result = process_inbox(paths, target=args.target, model=args.model, use_git=args.git, prompt_template=prompt_template, debug=args.debug)
+    
+    # Exit with appropriate code
+    if result is None:
+        sys.exit(1)  # Unexpected error
+    successful, failed = result
+    if failed > 0:
+        sys.exit(1)  # Some files failed
+    if successful == 0:
+        sys.exit(2)  # No files were processed (not necessarily an error, but nothing happened)
+    sys.exit(0)  # Success
 
 if __name__ == "__main__":
     run_summarization()

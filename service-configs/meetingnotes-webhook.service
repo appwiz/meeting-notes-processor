@@ -17,6 +17,10 @@ WorkingDirectory=/home/CHANGEME/git/meeting-notes-processor
 ExecStart=/home/CHANGEME/.local/bin/uv run meetingnotesd.py
 Environment="GH_TOKEN=ghp_CHANGEME"
 
+# Prevent git from prompting for credentials (fail fast instead of hanging)
+Environment="GIT_ASKPASS=/bin/true"
+Environment="GIT_TERMINAL_PROMPT=0"
+
 # Optional: load secrets from a separate file instead of embedding in this unit
 # EnvironmentFile=/etc/meetingnotes-webhook.env
 
@@ -29,13 +33,11 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=meetingnotes-webhook
 
-# Security hardening (optional but recommended)
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/CHANGEME/git/meeting-notes-processor
-ReadWritePaths=/home/CHANGEME/git/meeting-notes
-PrivateTmp=yes
+# Note: Security hardening options (NoNewPrivileges, ProtectSystem, ProtectHome, etc.)
+# are intentionally omitted. They conflict with snap-based uv and npx which need
+# to set capabilities and access various system paths. If you install uv via
+# the standalone installer (curl -LsSf https://astral.sh/uv/install.sh | sh)
+# instead of snap, you may be able to re-enable some hardening options.
 
 [Install]
 WantedBy=multi-user.target

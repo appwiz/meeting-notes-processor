@@ -249,6 +249,7 @@ class RepoAgent:
         # Set WORKSPACE_DIR to point to the data repo
         env = os.environ.copy()
         env['WORKSPACE_DIR'] = str(self._repo_path())
+        env['PYTHONUNBUFFERED'] = '1'  # Ensure output isn't buffered
 
         args = shlex.split(self.standalone_command)
         logger.info(f"Running standalone processing: {args} (cwd={working_dir}, WORKSPACE_DIR={env['WORKSPACE_DIR']})")
@@ -275,6 +276,12 @@ class RepoAgent:
             if len(detail) > 200:
                 detail = detail[:200] + '...'
             return False, f"standalone processing failed: {detail}"
+
+        # Log stdout for debugging even on success
+        stdout = (result.stdout or '').strip()
+        if stdout:
+            for line in stdout.split('\n')[:20]:  # First 20 lines
+                logger.info(f"  stdout: {line}")
 
         logger.info("Standalone processing completed successfully")
         return True, "standalone processing completed"
