@@ -127,3 +127,15 @@ Use `workflows-templates/process-transcripts-data-repo.yml` (copy to `.github/wo
 - Use inline script metadata (PEP 723) for dependencies
 - `uv` handles virtual environments automatically
 - For separated repos, use `--workspace` argument for run_summarization.py
+
+## Project Structure
+
+- `docs/PRD.md` - Product Requirements Document with design decisions and rationale
+- `docs/MISC.md` - Miscellaneous notes and ideas
+- `service-configs/` - systemd and launchd configurations for running as a system service
+- `tests/` - Test suite (run with `uv run pytest`)
+
+## Troubleshooting
+
+- Use `--debug` flag with run_summarization.py for verbose output when diagnosing issues
+- Exit codes: 0 = success, 1 = failures occurred, 2 = no files to process
