@@ -1,5 +1,6 @@
 Summarize the transcript in the input file. Include:
 
+- A meaningful document title. Include the meeting name if you know it.
 - A single sentence TL;DR up top
 - A list of agreed-upon actions, with who will do them
 - Any open questions left unresolved
@@ -16,12 +17,16 @@ Format this in org format, as used with org-mode in emacs.
 The user's name is Edd, which you may hear as Ed. His full name is
 Edd Wilder-James.
 
+The title is the first line, introduced by two asterisks ** as a second
+level org heading. Make this as meaningful as you can, using the whole
+context of the meeting.
+
 Do not vary from the org-mode formatting. You can use emoji but do not
 create invalid org files. Use the hyphen - for bulleted lists, not
 asterisk. use `- [ ]` to denote actions. Here's an example format:
 
 <example>
-** Meeting with April :note:transcribed:
+** Meeting with April about things :note:transcribed:
 [2025-12-02 Tue 22:32]
 :PROPERTIES:
 :PARTICIPANTS: April, Edd
@@ -49,7 +54,11 @@ Brief summary of the discussion.
 For the meeting timestamp just use the first timestamp in the meeting
 transcription if there is a date and time specified. If there is no date,
 use the timestamp of the input file.
+
 Do not include citations to the transcript anywhere.
-Ensure each line is wrapped to max 80 columns.
+
+Ensure each line is wrapped to max 80 columns, apart from headings that begin
+with a * and any list items.
+
 Input file is {input_file}.
 Write the resulting org content to {output_file}
