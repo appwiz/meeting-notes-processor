@@ -17,9 +17,14 @@ WorkingDirectory=/home/CHANGEME/git/meeting-notes-processor
 ExecStart=/home/CHANGEME/.local/bin/uv run meetingnotesd.py
 Environment="GH_TOKEN=ghp_CHANGEME"
 
-# CHANGEME: Path to copilot CLI (find with: which copilot)
-# Required because npm installs in user-specific paths not in systemd's default PATH
-Environment="COPILOT_PATH=/home/CHANGEME/.npm-global/bin/copilot"
+# CHANGEME: Path to copilot CLI wrapper script
+# Create wrapper to handle nvm: ~/bin/copilot-wrapper with contents:
+#   #!/bin/bash
+#   export NVM_DIR="$HOME/.nvm"
+#   [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+#   exec copilot "$@"
+# This survives node version upgrades automatically.
+Environment="COPILOT_PATH=/home/CHANGEME/bin/copilot-wrapper"
 
 # Prevent git from prompting for credentials (fail fast instead of hanging)
 Environment="GIT_ASKPASS=/bin/true"
