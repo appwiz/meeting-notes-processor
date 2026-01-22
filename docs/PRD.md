@@ -62,6 +62,8 @@ Meeting transcripts accumulate rapidly but lack organization and context, making
 - **FR-5.4**: Daemon can optionally run a user-configured command hook when new data is detected after a sync (configurable)
 - **FR-5.5**: Daemon logs sync/dispatch/hook outcomes clearly and fails safely (no partial writes or silent drops)
 - **FR-5.6**: If the configured data-repo working directory does not contain a git checkout yet, daemon can bootstrap it by cloning the data repo before syncing/processing
+- **FR-5.7**: Daemon provides `/calendar` endpoint to receive calendar.org updates via webhook (JSON or plain text)
+- **FR-5.8**: Standalone mode supports async processing: return immediately after saving transcript, process in background thread
 
 ## Directory Structure
 
@@ -209,14 +211,15 @@ User selects which LLM to use via command-line argument or configuration, provid
 
 ### Overview
 
-Enhance meeting notes by cross-referencing with a `calendar.org` file in the data repository. After initial note generation, the system triangulates the meeting against calendar entries using time, participants, and subject matter to enrich notes with accurate meeting metadata.
+Enhance meeting notes by cross-referencing with a `calendar.org` file in the data repository. Calendar data is passed to the LLM **at summarization time** (single-pass), allowing real-time triangulation of transcript speakers against calendar attendees. This corrects transcription errors (e.g., "Kim" → "Alex") and ensures accurate participant identification.
 
 ### Problem Statement
 
 Transcripts often lack precise metadata:
 - Meeting titles from transcription software are generic ("Meeting Recording", "Zoom Call")
 - Timestamps may be imprecise or only have dates without times
-- Participant lists in transcripts may be incomplete (only speakers identified)
+- Participant lists in transcripts may be incomplete or incorrect (speaker misidentification)
+- Transcription software may confuse names (e.g., hearing "Kim" when the speaker said "Alex")
 
 Calendar data provides authoritative information:
 - Exact meeting titles as scheduled
@@ -227,21 +230,28 @@ Calendar data provides authoritative information:
 ### Goals
 
 1. **Accuracy**: Match transcripts to the correct calendar entries with high confidence
-2. **Enrichment**: Add calendar metadata (title, time, attendees, links) to notes
-3. **Non-destructive**: Preserve original AI-generated insights; augment, don't replace
-4. **Optional**: Feature is opt-in; works without calendar file present
+2. **Correction**: Use calendar attendees to correct transcription errors in speaker names
+3. **Enrichment**: Add calendar metadata (title, time, attendees, links) to notes
+4. **Non-destructive**: Preserve original AI-generated insights; augment, don't replace
+5. **Optional**: Feature is opt-in; works without calendar file present
 
-### Architecture: Two-Pass Processing
+### Architecture: Single-Pass Processing
 
-**Current Flow (Pass 1):**
+**Flow:**
 ```
-transcript → Copilot/Gemini → notes.org (with PARTICIPANTS, SLUG, timestamp)
+transcript + calendar.org + recent_notes_context → LLM → notes.org (with accurate metadata)
 ```
 
-**Enhanced Flow (Pass 2 - Calendar Matching):**
-```
-notes.org + calendar.org → LLM triangulation → enriched notes.org
-```
+The LLM receives:
+1. **Transcript content** - who's speaking, what's discussed
+2. **Calendar entries** - scheduled meetings for that day with attendees
+3. **Notes context** - patterns from recent notes (who discusses what topics)
+
+This allows the LLM to cross-reference in real-time:
+- "This transcript has 'Kim' speaking about project topics at 10am"
+- "Calendar shows Alex 1:1 at 10am, no meeting with Kim"
+- "Prior notes show Alex discusses project topics"
+- → "This is probably Alex, not Kim"
 
 ### Triangulation Strategy
 
@@ -262,6 +272,23 @@ The system uses multiple signals to match transcripts with calendar entries:
    - Subject similarity (semantic match via LLM)
 3. If top score exceeds confidence threshold → match
 4. If multiple entries tie or low confidence → no match (preserve original)
+
+### Notes Context for Disambiguation
+
+When multiple 1:1 meetings occur on the same day with similar topics, the system uses patterns from **prior notes** to disambiguate:
+
+```
+Recent meeting context:
+- Alice Chen: "Platform architecture", "API releases", "career discussion"  
+- Bob Smith: "Collaboration issues between Bob and Carol", "team dynamics"
+```
+
+If a transcript discusses "interpersonal challenges with Carol" but doesn't mention either Alice or Bob by name, the notes context helps the LLM recognize this matches Bob's typical discussion topics, not Alice's.
+
+The `gather_recent_notes_context()` function extracts:
+- Participant names from recent notes
+- Meeting titles/topics associated with each participant
+- This builds a "meeting memory" that improves accuracy over time
 
 ### Calendar.org Format
 
@@ -293,23 +320,23 @@ The system expects standard org-mode format with timestamps and properties:
 When a calendar match is found, the notes file is updated:
 
 ```org
-** 1:1 with Marion: Sales Pipeline Review :note:transcribed:
+** 1:1 with Dana: Sales Pipeline Review :note:transcribed:
 [2026-01-20 Tue 14:35-15:00]
 :PROPERTIES:
-:PARTICIPANTS: Marion Lang, Edd Wilder-James
+:PARTICIPANTS: Dana Lee, Edd Wilder-James
 :TOPIC: Quarterly sales pipeline and marketing alignment
-:SLUG: marion-sales-pipeline
-:CALENDAR_MATCH: Edd / Marion
+:SLUG: dana-sales-pipeline
+:CALENDAR_MATCH: Edd / Dana
 :CALENDAR_TIME: 14:35-15:00
-:MEETING_LINK: https://github.zoom.us/j/91243644499
+:MEETING_LINK: https://zoom.us/j/123456789
 :END:
 ```
 
 **Enrichment rules:**
 1. **Title**: Incorporate calendar meeting title/participants for clarity
 2. **Slug**: Update to include participant names or meeting type for easier scanning
-   - Example: `sales-pipeline-review` → `marion-sales-pipeline`
-   - Example: `quarterly-planning` → `sarah-q1-planning`
+   - Example: `sales-pipeline-review` → `dana-sales-pipeline`
+   - Example: `quarterly-planning` → `sam-q1-planning`
    - Prioritize: person names > meeting type > topic keywords
 3. **Timestamp**: Update to exact calendar time if more precise
 4. **Participants**: Merge calendar attendees with detected speakers
@@ -318,7 +345,7 @@ When a calendar match is found, the notes file is updated:
 7. **Rename files**: After enrichment, rename both notes and transcript files to match new slug
 
 **Slug improvement rationale:**
-When browsing `notes/` directory, filenames like `20260120-marion-sales-pipeline.org` are far more useful than `20260120-sales-pipeline.org` because:
+When browsing `notes/` directory, filenames like `20260120-dana-sales-pipeline.org` are far more useful than `20260120-sales-pipeline.org` because:
 - Immediately identifies who the meeting was with
 - Groups related 1:1s together when sorted alphabetically
 - Reduces need to open files to find the right one

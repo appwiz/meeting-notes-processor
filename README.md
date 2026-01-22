@@ -354,6 +354,7 @@ processing:
     command: "uv run run_summarization.py --git"
     working_directory: "."
     timeout_seconds: 300
+    async: false  # Return immediately from webhook, process in background
 
 # RELAY MODE: trigger GitHub Actions
 github:
@@ -388,6 +389,28 @@ For production use, run the daemon as a proper system service so it starts autom
 
 See [service-configs/README.md](service-configs/README.md) for detailed setup instructions.
 
+#### Environment Variables
+
+When running as a system service, the following environment variables are useful:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `GH_TOKEN` | GitHub token for push/workflow_dispatch | `ghp_xxxxxxxxxxxx` |
+| `WEBHOOK_CONFIG` | Path to config file | `/home/user/config.yaml` |
+| `COPILOT_PATH` | Path to copilot CLI (for nvm/npm installs) | `/home/user/bin/copilot-wrapper` |
+
+**COPILOT_PATH** is especially important for systemd/launchd where the normal shell PATH isn't available. If using nvm, create a wrapper script:
+
+```bash
+# ~/bin/copilot-wrapper
+#!/bin/bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+exec copilot "$@"
+```
+
+Then set `COPILOT_PATH=/home/user/bin/copilot-wrapper` in your service configuration.
+
 #### Git Repository Setup for the Daemon
 
 When running the daemon (especially as a system service), it needs to push changes without interactive authentication. **HTTPS remotes with embedded tokens** work more reliably than SSH:
@@ -411,6 +434,29 @@ curl http://localhost:9876/
 # Send a test transcript
 uv run send_transcript.py examples/q1-planning-sarah.txt
 ```
+
+### Calendar Endpoint
+
+The daemon provides a `/calendar` endpoint to update `calendar.org` in your data repo. This enables calendar-enhanced processing where meeting participants are cross-referenced with calendar entries.
+
+```bash
+# Send calendar data as JSON
+curl -X POST http://localhost:9876/calendar \
+  -H "Content-Type: application/json" \
+  -d '{"calendar": "* Meeting <2026-01-22 Thu 10:00>"}'
+
+# Or as plain text (useful for piping files)
+curl -X POST http://localhost:9876/calendar \
+  -H "Content-Type: text/plain" \
+  --data-binary @calendar.org
+```
+
+When `calendar.org` exists in your data repo, `run_summarization.py` automatically uses it to:
+- Match transcripts to calendar entries by time and participants
+- Correct speaker misidentification in transcripts
+- Add accurate meeting times and attendee information
+
+See [PRD.md](docs/PRD.md) Phase 7 for details on calendar integration.
 
 ---
 
