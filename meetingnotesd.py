@@ -15,10 +15,25 @@ Syncs and manages the data repository. Configuration is loaded from config.yaml.
 
 Run with: uv run meetingnotesd.py
 
-Test with:
+Endpoints:
+  GET  /         - Health check
+  POST /webhook  - Receive transcript from MacWhisper
+  POST /calendar - Update calendar.org
+
+Test transcript webhook:
 curl -X POST http://localhost:9876/webhook \
   -H "Content-Type: application/json" \
   -d '{"title": "Test Meeting", "transcript": "This is a test transcript."}'
+
+Test calendar webhook (JSON):
+curl -X POST http://localhost:9876/calendar \
+  -H "Content-Type: application/json" \
+  -d '{"calendar": "* Meeting <2026-01-22 Thu 10:00-11:00>"}'
+
+Test calendar webhook (plain text):
+curl -X POST http://localhost:9876/calendar \
+  -H "Content-Type: text/plain" \
+  --data-binary @calendar.org
 """
 
 from flask import Flask, request, jsonify
@@ -451,6 +466,11 @@ def health_check():
         'inbox_dir': agent.inbox_dir,
         'repository': agent.repo_dir,
         'port': agent.port,
+        'endpoints': {
+            'health': '/',
+            'transcript': '/webhook',
+            'calendar': '/calendar',
+        },
         'processing_mode': processing_mode,
         'sync': {
             'enabled': agent.sync_enabled,
@@ -466,6 +486,100 @@ def health_check():
             'workflow': agent.workflow_dispatch_workflow if agent.workflow_dispatch_enabled else None,
         },
     }), 200
+
+
+@app.route('/calendar', methods=['POST'])
+def calendar():
+    """
+    Endpoint for receiving calendar data (org-mode format).
+    Overwrites calendar.org in the data repository.
+    
+    Expected payload:
+    {
+        "calendar": "* Meeting 1 <2026-01-20 Mon 10:00-11:00>\n..."
+    }
+    
+    Or plain text with Content-Type: text/plain
+    """
+    try:
+        # Accept either JSON or plain text
+        if request.is_json:
+            data = request.get_json()
+            if 'calendar' not in data:
+                return jsonify({
+                    'status': 'error',
+                    'message': "Missing required field: 'calendar'"
+                }), 400
+            calendar_content = data['calendar']
+        elif request.content_type and 'text/plain' in request.content_type:
+            calendar_content = request.get_data(as_text=True)
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Content-Type must be application/json or text/plain'
+            }), 400
+
+        if not calendar_content or not calendar_content.strip():
+            return jsonify({
+                'status': 'error',
+                'message': 'Calendar content cannot be empty'
+            }), 400
+
+        # Size limit: 1MB should be plenty for a calendar file
+        MAX_CALENDAR_SIZE = 1024 * 1024
+        content_size = len(calendar_content.encode('utf-8'))
+        if content_size > MAX_CALENDAR_SIZE:
+            return jsonify({
+                'status': 'error',
+                'message': f'Calendar too large ({content_size} bytes). Maximum size is {MAX_CALENDAR_SIZE} bytes.'
+            }), 413
+
+        with agent._lock:
+            # Sync before writing
+            if agent.sync_enabled and agent.sync_before_accepting_webhooks:
+                try:
+                    changed, msg = agent.sync_repo()
+                    logger.info(f"Pre-calendar sync: {msg}")
+                except Exception as e:
+                    logger.warning(f"Pre-calendar sync failed: {e}")
+
+            # Write calendar.org
+            calendar_path = os.path.join(agent.repo_dir, 'calendar.org')
+            with open(calendar_path, 'w', encoding='utf-8') as f:
+                f.write(calendar_content)
+
+            logger.info(f"Updated calendar: {calendar_path} ({content_size} bytes)")
+
+            response_data = {
+                'status': 'success',
+                'message': 'Calendar updated',
+                'size': content_size,
+            }
+
+            # Commit and push if enabled
+            if agent.git_auto_commit:
+                if agent.sync_enabled:
+                    agent.ensure_repo_checkout()
+
+                commit_ok, commit_msg = agent.git_commit(calendar_path, 'Calendar update')
+                response_data['git'] = {
+                    'committed': commit_ok,
+                    'message': commit_msg,
+                }
+
+                if commit_ok and agent.git_auto_push:
+                    push_ok, push_msg = agent.git_push()
+                    response_data['git']['pushed'] = push_ok
+                    response_data['git']['push_message'] = push_msg
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logger.error(f"Error processing calendar: {str(e)}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'Internal server error: {str(e)}'
+        }), 500
 
 
 @app.route('/webhook', methods=['POST'])
@@ -662,7 +776,8 @@ if __name__ == '__main__':
     logger.info(f"Inbox directory: {agent.inbox_dir}")
     logger.info(f"Repository: {agent.repo_dir}")
     logger.info(f"Health check: http://{agent.host}:{agent.port}/")
-    logger.info(f"Webhook endpoint: http://{agent.host}:{agent.port}/webhook")
+    logger.info(f"Transcript webhook: http://{agent.host}:{agent.port}/webhook")
+    logger.info(f"Calendar webhook: http://{agent.host}:{agent.port}/calendar")
 
     # Ensure repo checkout + initial sync
     if agent.sync_enabled and agent.sync_on_startup:
