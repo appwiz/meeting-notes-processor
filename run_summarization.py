@@ -79,7 +79,7 @@ def format_calendar_for_prompt(calendar_entries: list[dict], meeting_date: str) 
     return '\n'.join(lines)
 
 
-def build_calendar_aware_prompt(base_prompt: str, calendar_text: str, meeting_date: str) -> str:
+def build_calendar_aware_prompt(base_prompt: str, calendar_text: str, meeting_date: str, notes_context: str = "") -> str:
     """Build a combined prompt that includes calendar context for single-pass processing."""
     
     calendar_instructions = f"""
@@ -91,6 +91,8 @@ You have access to the user's calendar for this date. Use this to:
 3. Use the calendar to CORRECT speaker misidentification
 
 {calendar_text}
+
+{notes_context}
 
 ## CRITICAL: Participant Identification Strategy
 
@@ -110,6 +112,16 @@ The transcript speaker labels are OFTEN WRONG due to transcription errors. Use t
 - Calendar format for 1:1s: "username / ewilderj 1:1" (e.g., "thabani11 / ewilderj 1:1")
 - The username maps to a person (thabani11 = Thabani)
 - If the transcript has 2 speakers and one is Edd, this is a 1:1
+
+### Step 3b: Disambiguating between multiple 1:1 candidates
+If there are multiple 1:1 meetings on the same day:
+- Look at WHO is describing THEIR OWN work/problems (not Edd)
+- The person describing their programs, their direct reports, their issues = that's the meeting counterpart
+- KEY INSIGHT: If someone says "I've been having issues with X and Y", the speaker is the COMPLAINANT, not X or Y
+- If they reference "my team", "my project", "my manager" - use those possessive phrases to identify the speaker
+- DURATION HINT: A very long, detailed transcript likely corresponds to a longer calendar slot
+- DO NOT just pick the first 1:1 in calendar order - use content clues to disambiguate
+- Cross-reference against calendar participants to find the match
 
 ### Step 4: Slug naming based on CORRECTED participants
 - For 1:1 meetings: ALWAYS use "firstname-edd-1-1" format (e.g., "marion-edd-1-1", "thabani-edd-1-1")
@@ -177,6 +189,79 @@ def ensure_unique_filename(directory, base_name, extension):
         if not os.path.exists(filepath):
             return filepath
         counter += 1
+
+
+def gather_recent_notes_context(notes_dir: str, limit: int = 30) -> str:
+    """Extract metadata from recent notes to help with participant identification.
+    
+    Returns a formatted string showing recent meeting patterns:
+    - Who attends which types of meetings
+    - What topics each person typically discusses
+    """
+    if not os.path.exists(notes_dir):
+        return ""
+    
+    notes_files = sorted(glob.glob(os.path.join(notes_dir, '*.org')), reverse=True)[:limit]
+    
+    if not notes_files:
+        return ""
+    
+    person_topics = {}  # person -> list of topics they've discussed
+    
+    for note_file in notes_files:
+        try:
+            with open(note_file, 'r', encoding='utf-8') as f:
+                content = f.read(2000)  # Just read header portion
+            
+            # Extract participants
+            participants_match = re.search(r':PARTICIPANTS:\s*(.+?)(?:\n|$)', content)
+            if not participants_match:
+                continue
+            
+            participants = [p.strip() for p in participants_match.group(1).split(',')]
+            # Filter to non-Edd participants in 1:1s
+            other_participants = [p for p in participants 
+                                  if 'edd' not in p.lower() and p.strip()]
+            
+            # Extract topic
+            topic_match = re.search(r':TOPIC:\s*(.+?)(?:\n|$)', content)
+            topic = topic_match.group(1).strip() if topic_match else None
+            
+            # Extract title (first line after **)
+            title_match = re.search(r'^\*\*\s+(.+?)(?:\s+:note)?', content, re.MULTILINE)
+            title = title_match.group(1).strip() if title_match else None
+            
+            # For 1:1s, associate topics with the other person
+            if len(other_participants) == 1 and topic:
+                person = other_participants[0]
+                # Extract first name for matching
+                first_name = person.split()[0] if person else None
+                if first_name:
+                    if first_name not in person_topics:
+                        person_topics[first_name] = []
+                    person_topics[first_name].append(topic[:100])  # Truncate long topics
+        
+        except Exception:
+            continue
+    
+    if not person_topics:
+        return ""
+    
+    # Format as context for LLM
+    lines = ["## RECENT MEETING HISTORY (for disambiguation)", ""]
+    lines.append("Recent 1:1 meetings and their topics - use this to identify who typically discusses what:")
+    lines.append("")
+    
+    for person, topics in sorted(person_topics.items()):
+        # Show last 3 topics for each person
+        recent_topics = topics[:3]
+        lines.append(f"- **{person}**: {'; '.join(recent_topics)}")
+    
+    lines.append("")
+    lines.append("If uncertain which 1:1 a transcript belongs to, match the discussion topics to the person above.")
+    lines.append("")
+    
+    return '\n'.join(lines)
 
 
 # ============================================================================
@@ -516,7 +601,9 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
         if day_entries:
             print(f"  Calendar: Found {len(day_entries)} entries for {meeting_date}")
             calendar_text = format_calendar_for_prompt(day_entries, meeting_date)
-            final_prompt = build_calendar_aware_prompt(final_prompt, calendar_text, meeting_date)
+            # Gather recent notes context to help with disambiguation
+            notes_context = gather_recent_notes_context(paths['notes'])
+            final_prompt = build_calendar_aware_prompt(final_prompt, calendar_text, meeting_date, notes_context)
         else:
             print(f"  Calendar: No entries for {meeting_date}")
     
