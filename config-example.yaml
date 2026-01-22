@@ -53,6 +53,9 @@ processing:
     command: "uv run run_summarization.py --git"
     working_directory: "."  # Relative to processor repo, or absolute path
     timeout_seconds: 300
+    # Async mode: return immediately from webhook, process in background.
+    # Errors are logged but not returned to caller.
+    async: false
 
 # Optional: run a command when `git pull` brings in new commits.
 hooks:

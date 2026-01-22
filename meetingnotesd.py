@@ -138,10 +138,13 @@ class RepoAgent:
         self.standalone_command = _get_nested(config, ['processing', 'standalone', 'command'], 'uv run run_summarization.py --git')
         self.standalone_working_directory = _get_nested(config, ['processing', 'standalone', 'working_directory'], '.')
         self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 300))
+        # Async mode: return immediately after saving file, process in background
+        self.standalone_async = bool(_get_nested(config, ['processing', 'standalone', 'async'], False))
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._sync_thread: threading.Thread | None = None
+        self._processing_thread: threading.Thread | None = None
 
     def _token(self) -> str | None:
         return os.environ.get('GH_TOKEN')
@@ -299,6 +302,30 @@ class RepoAgent:
 
         logger.info("Standalone processing completed successfully")
         return True, "standalone processing completed"
+
+    def run_standalone_processing_async(self) -> None:
+        """Run standalone processing in background thread, then push results."""
+        def _background_task():
+            try:
+                with self._lock:
+                    proc_ok, proc_msg = self.run_standalone_processing()
+                    if proc_ok:
+                        logger.info(f"Background processing succeeded: {proc_msg}")
+                        if self.git_auto_push:
+                            push_ok, push_msg = self.git_push()
+                            if push_ok:
+                                logger.info(f"Background push succeeded: {push_msg}")
+                            else:
+                                logger.error(f"Background push failed: {push_msg}")
+                    else:
+                        logger.error(f"Background processing failed: {proc_msg}")
+            except Exception as e:
+                logger.error(f"Background processing exception: {e}")
+
+        # Start background thread
+        self._processing_thread = threading.Thread(target=_background_task, daemon=True)
+        self._processing_thread.start()
+        logger.info("Started background processing thread")
 
     def maybe_dispatch_workflow(self, *, reason: str) -> tuple[bool, str]:
         if not self.workflow_dispatch_enabled:
@@ -694,20 +721,30 @@ def webhook():
                 else:
                     # Choose processing mode: standalone (local) or relay (workflow dispatch)
                     if agent.standalone_enabled:
-                        # Standalone mode: process locally, then push everything together
-                        proc_ok, proc_msg = agent.run_standalone_processing()
-                        response_data['processing'] = {
-                            'mode': 'standalone',
-                            'success': proc_ok,
-                            'message': proc_msg,
-                        }
-                        # Push all commits (inbox + processing results) together
-                        if proc_ok and agent.git_auto_push:
-                            push_ok, push_msg = agent.git_push()
-                            response_data['git']['pushed'] = push_ok
-                            response_data['git']['push_message'] = push_msg
-                            if not push_ok:
-                                logger.warning(f"Push after standalone processing failed: {push_msg}")
+                        if agent.standalone_async:
+                            # Async mode: return immediately, process in background
+                            agent.run_standalone_processing_async()
+                            response_data['processing'] = {
+                                'mode': 'standalone',
+                                'async': True,
+                                'message': 'Processing started in background',
+                            }
+                        else:
+                            # Sync mode: wait for processing to complete
+                            proc_ok, proc_msg = agent.run_standalone_processing()
+                            response_data['processing'] = {
+                                'mode': 'standalone',
+                                'async': False,
+                                'success': proc_ok,
+                                'message': proc_msg,
+                            }
+                            # Push all commits (inbox + processing results) together
+                            if proc_ok and agent.git_auto_push:
+                                push_ok, push_msg = agent.git_push()
+                                response_data['git']['pushed'] = push_ok
+                                response_data['git']['push_message'] = push_msg
+                                if not push_ok:
+                                    logger.warning(f"Push after standalone processing failed: {push_msg}")
                     else:
                         # Relay mode: push immediately so GitHub Actions can access the file
                         if agent.git_auto_push:
