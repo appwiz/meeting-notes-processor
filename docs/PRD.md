@@ -196,12 +196,343 @@ User selects which LLM to use via command-line argument or configuration, provid
 ## Future Considerations
 
 - Web interface for browsing and searching processed meetings
-- Integration with calendar systems to auto-populate meeting metadata
+- ~~Integration with calendar systems to auto-populate meeting metadata~~ (See Phase 7)
 - Multi-language transcript support
 - Advanced search using vector embeddings
 - Automatic tagging and categorization
 - Cross-referencing between related meetings
 - Export to other formats (Markdown, HTML, PDF)
+
+---
+
+## Phase 7: Calendar Integration
+
+### Overview
+
+Enhance meeting notes by cross-referencing with a `calendar.org` file in the data repository. After initial note generation, the system triangulates the meeting against calendar entries using time, participants, and subject matter to enrich notes with accurate meeting metadata.
+
+### Problem Statement
+
+Transcripts often lack precise metadata:
+- Meeting titles from transcription software are generic ("Meeting Recording", "Zoom Call")
+- Timestamps may be imprecise or only have dates without times
+- Participant lists in transcripts may be incomplete (only speakers identified)
+
+Calendar data provides authoritative information:
+- Exact meeting titles as scheduled
+- Precise start/end times
+- Complete attendee lists
+- Links to documents, video calls, and related resources
+
+### Goals
+
+1. **Accuracy**: Match transcripts to the correct calendar entries with high confidence
+2. **Enrichment**: Add calendar metadata (title, time, attendees, links) to notes
+3. **Non-destructive**: Preserve original AI-generated insights; augment, don't replace
+4. **Optional**: Feature is opt-in; works without calendar file present
+
+### Architecture: Two-Pass Processing
+
+**Current Flow (Pass 1):**
+```
+transcript → Copilot/Gemini → notes.org (with PARTICIPANTS, SLUG, timestamp)
+```
+
+**Enhanced Flow (Pass 2 - Calendar Matching):**
+```
+notes.org + calendar.org → LLM triangulation → enriched notes.org
+```
+
+### Triangulation Strategy
+
+The system uses multiple signals to match transcripts with calendar entries:
+
+| Signal | Source | Weight | Notes |
+|--------|--------|--------|-------|
+| **Time** | Transcript timestamp / file mtime | High | Match within ±2 hours of calendar entry |
+| **Participants** | `:PARTICIPANTS:` property in notes | High | Fuzzy match names (Edd → Edd Wilder-James) |
+| **Subject** | Topic, slug, content keywords | Medium | Semantic similarity with calendar title/description |
+| **Date** | Explicit date in transcript or file | Critical | Must be same day (hard constraint) |
+
+**Matching Algorithm:**
+1. Filter calendar entries by date (same day as transcript)
+2. Score remaining entries by:
+   - Time proximity (closer = higher score)
+   - Participant overlap (more matches = higher score)
+   - Subject similarity (semantic match via LLM)
+3. If top score exceeds confidence threshold → match
+4. If multiple entries tie or low confidence → no match (preserve original)
+
+### Calendar.org Format
+
+The system expects standard org-mode format with timestamps and properties:
+
+```org
+#+TITLE: Google Calendar Events
+
+* Meeting Title <2026-01-20 Tue 09:05-09:45>
+  :PROPERTIES:
+  :PARTICIPANTS: Alice <alice@example.com>, Bob <bob@example.com>
+  :LOCATION: https://zoom.us/j/123456
+  :END:
+  Meeting description and notes links...
+```
+
+**Required elements:**
+- Heading with meeting title
+- Org timestamp in angle brackets: `<YYYY-MM-DD Day HH:MM-HH:MM>`
+- `:PARTICIPANTS:` property (optional but improves matching)
+
+**Optional elements:**
+- `:LOCATION:` property (video call links)
+- Attached document/notes links
+- Meeting description text
+
+### Enrichment Output
+
+When a calendar match is found, the notes file is updated:
+
+```org
+** 1:1 with Marion: Sales Pipeline Review :note:transcribed:
+[2026-01-20 Tue 14:35-15:00]
+:PROPERTIES:
+:PARTICIPANTS: Marion Lang, Edd Wilder-James
+:TOPIC: Quarterly sales pipeline and marketing alignment
+:SLUG: marion-sales-pipeline
+:CALENDAR_MATCH: Edd / Marion
+:CALENDAR_TIME: 14:35-15:00
+:MEETING_LINK: https://github.zoom.us/j/91243644499
+:END:
+```
+
+**Enrichment rules:**
+1. **Title**: Incorporate calendar meeting title/participants for clarity
+2. **Slug**: Update to include participant names or meeting type for easier scanning
+   - Example: `sales-pipeline-review` → `marion-sales-pipeline`
+   - Example: `quarterly-planning` → `sarah-q1-planning`
+   - Prioritize: person names > meeting type > topic keywords
+3. **Timestamp**: Update to exact calendar time if more precise
+4. **Participants**: Merge calendar attendees with detected speakers
+5. **New properties**: Add `CALENDAR_MATCH`, `CALENDAR_TIME`, `MEETING_LINK`
+6. **Preserve**: Keep AI-generated TL;DR, actions, summary unchanged
+7. **Rename files**: After enrichment, rename both notes and transcript files to match new slug
+
+**Slug improvement rationale:**
+When browsing `notes/` directory, filenames like `20260120-marion-sales-pipeline.org` are far more useful than `20260120-sales-pipeline.org` because:
+- Immediately identifies who the meeting was with
+- Groups related 1:1s together when sorted alphabetically
+- Reduces need to open files to find the right one
+
+### Implementation Options
+
+#### Option A: Single LLM Pass (Recommended)
+
+Use Copilot CLI to perform matching and enrichment in one prompt:
+
+```bash
+npx @github/copilot -p "
+Given these calendar entries for [date]:
+[calendar excerpt]
+
+And this meeting note:
+[notes.org content]
+
+Determine if there's a matching calendar entry based on:
+- Time overlap (note timestamp vs calendar times)
+- Participant names (partial matches count)
+- Subject/topic similarity
+
+If confident match (>70%), output the enriched note with:
+- Updated title (if calendar title is more specific)
+- Exact time from calendar
+- CALENDAR_MATCH property with matched entry title
+- MEETING_LINK if available
+
+If no confident match, output the original note unchanged.
+"
+```
+
+**Pros:**
+- Simple implementation
+- LLM handles fuzzy matching naturally
+- Single subprocess call
+
+**Cons:**
+- Uses LLM tokens for matching logic
+- Less deterministic
+
+#### Option B: Hybrid Approach
+
+Python does date/time filtering, LLM does semantic matching:
+
+1. **Python**: Parse `calendar.org`, filter to same-day entries
+2. **Python**: Score entries by time proximity and participant overlap
+3. **LLM**: For top candidates, ask for semantic subject match
+4. **Python**: Apply enrichment based on final selection
+
+**Pros:**
+- More efficient token usage
+- Deterministic date/time matching
+- Better error handling
+
+**Cons:**
+- More complex implementation
+- Requires org-mode parsing in Python
+
+#### Option C: Full LLM Orchestration
+
+Have the LLM read both files and make all decisions:
+
+```bash
+npx @github/copilot -p "
+Read calendar.org and identify meetings on [date].
+Read [notes.org] and determine which calendar entry matches.
+Update [notes.org] with calendar metadata.
+" --allow-tool read --allow-tool write
+```
+
+**Pros:**
+- Simplest code
+- LLM sees full context
+
+**Cons:**
+- Most expensive (token usage)
+- May be slow for large calendars
+- Less predictable
+
+### Recommended Implementation: Option A with Pre-filtering
+
+Combine efficiency with LLM intelligence:
+
+1. **Python pre-processing**:
+   - Read `calendar.org` if present (skip feature if missing)
+   - Extract note's date from timestamp or file
+   - Filter calendar to entries within ±1 day
+   - Extract relevant calendar text (limit to ~10 entries)
+
+2. **LLM matching prompt**:
+   - Provide filtered calendar entries
+   - Provide complete notes.org
+   - Ask for match decision and enrichment
+   - Request structured output (JSON or org diff)
+
+3. **Python post-processing**:
+   - Parse LLM response
+   - Apply enrichment to notes file
+   - Log match decision for debugging
+
+### Configuration
+
+Add to `config.yaml`:
+
+```yaml
+calendar:
+  enabled: true
+  file: calendar.org  # relative to data repo root
+  confidence_threshold: 0.7  # minimum confidence for auto-match
+  time_window_hours: 2  # how far from transcript time to search
+  
+  # Enrichment options
+  enrich:
+    update_title: true  # replace generic titles
+    add_calendar_properties: true
+    merge_participants: true
+    add_meeting_links: true
+```
+
+Add CLI flag to `run_summarization.py`:
+
+```bash
+uv run run_summarization.py --calendar  # enable calendar matching
+uv run run_summarization.py --no-calendar  # explicitly disable
+```
+
+### Workflow Integration
+
+**After initial summarization:**
+```python
+def process_transcript(...):
+    # ... existing summarization code ...
+    
+    # Phase 7: Calendar enrichment
+    if calendar_enabled and os.path.exists(calendar_file):
+        enrich_with_calendar(org_path, calendar_file, date_str)
+```
+
+**Calendar enrichment function:**
+```python
+def enrich_with_calendar(notes_path, calendar_path, date_str):
+    """Enrich notes with calendar metadata if a match is found."""
+    # 1. Load and filter calendar entries
+    calendar_entries = parse_calendar_org(calendar_path)
+    candidates = filter_by_date(calendar_entries, date_str)
+    
+    if not candidates:
+        print(f"  No calendar entries for {date_str}, skipping enrichment")
+        return
+    
+    # 2. Build LLM prompt with candidates and notes
+    prompt = build_calendar_match_prompt(candidates, notes_path)
+    
+    # 3. Run LLM for matching and enrichment
+    result = run_copilot_calendar_match(prompt, notes_path)
+    
+    if result.matched:
+        print(f"  Matched to calendar: {result.calendar_title}")
+    else:
+        print(f"  No confident calendar match found")
+```
+
+### Functional Requirements
+
+- **FR-7.1**: System reads `calendar.org` from data repo root if present
+- **FR-7.2**: System filters calendar entries to same day as transcript
+- **FR-7.3**: System uses LLM to match transcript with calendar entry based on time, participants, and subject
+- **FR-7.4**: System adds calendar metadata properties to matched notes
+- **FR-7.5**: System preserves original AI-generated content (summary, actions, questions)
+- **FR-7.6**: System logs match decisions for debugging and audit
+- **FR-7.7**: Feature is optional and gracefully disabled if calendar.org missing
+- **FR-7.8**: System handles multiple transcripts from same day correctly
+
+### Testing Strategy
+
+1. **Unit tests**: Calendar parsing, date filtering, property merging
+2. **Integration tests**: Full flow with test calendar and transcripts
+3. **Edge cases**:
+   - Multiple meetings same day with similar participants
+   - Meeting time in transcript differs from calendar (rescheduled)
+   - Participants in transcript not in calendar (drop-ins)
+   - No calendar.org file present
+   - Calendar entry has no PARTICIPANTS property
+
+### Implementation Tasks
+
+1. [ ] Add calendar parsing utility (org-mode basic parser)
+2. [ ] Create calendar candidate filtering by date
+3. [ ] Design and test LLM matching prompt
+4. [ ] Implement enrichment function
+5. [ ] Add `--calendar` / `--no-calendar` CLI flags
+6. [ ] Add `calendar:` configuration section
+7. [ ] Integrate into `process_transcript()` flow
+8. [ ] Add tests with example calendar data
+9. [ ] Document feature in README
+
+### Open Questions
+
+1. **Multi-match handling**: When multiple calendar entries seem equally valid, should we:
+   - Ask user interactively?
+   - Pick closest by time?
+   - Add all as potential matches?
+   
+2. **Confidence exposure**: Should we add a `MATCH_CONFIDENCE` property so users know how certain the match was?
+
+3. **Re-enrichment**: If notes are manually edited, should re-processing preserve calendar metadata?
+
+4. **Calendar sources**: Future support for fetching live calendar data (Google Calendar API, Microsoft Graph)?
+
+5. **Attendee matching**: How to handle name variations (nicknames, formal names, email-only)?
+
+---
 
 ## Phase 3: MacWhisper Webhook Integration
 
