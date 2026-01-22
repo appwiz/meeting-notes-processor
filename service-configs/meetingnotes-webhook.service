@@ -17,6 +17,10 @@ WorkingDirectory=/home/CHANGEME/git/meeting-notes-processor
 ExecStart=/home/CHANGEME/.local/bin/uv run meetingnotesd.py
 Environment="GH_TOKEN=ghp_CHANGEME"
 
+# CHANGEME: Path to copilot CLI (find with: which copilot)
+# Required because npm installs in user-specific paths not in systemd's default PATH
+Environment="COPILOT_PATH=/home/CHANGEME/.npm-global/bin/copilot"
+
 # Prevent git from prompting for credentials (fail fast instead of hanging)
 Environment="GIT_ASKPASS=/bin/true"
 Environment="GIT_TERMINAL_PROMPT=0"

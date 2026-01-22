@@ -26,6 +26,9 @@ import re
 # Script directory for finding default prompt
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Copilot executable path - override with COPILOT_PATH env var for systemd/non-PATH contexts
+COPILOT_PATH = os.environ.get('COPILOT_PATH', 'copilot')
+
 
 def get_workspace_paths(workspace_dir: str) -> dict:
     """Compute all workspace-relative paths."""
@@ -475,7 +478,7 @@ def enrich_with_calendar(org_path: str, transcript_path: str, calendar_path: str
     prompt = build_calendar_prompt(notes, day_entries)
     
     model_name = model if model else 'claude-sonnet-4.5'
-    command = ['copilot', '-p', prompt, '--model', model_name]
+    command = [COPILOT_PATH, '-p', prompt, '--model', model_name]
     
     try:
         if debug:
@@ -613,7 +616,7 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     if target == 'copilot':
         model_name = model if model else 'claude-sonnet-4.5'
         command = [
-            'copilot',
+            COPILOT_PATH,
             '-p', final_prompt,
             '--allow-tool', 'write',
             '--model', model_name

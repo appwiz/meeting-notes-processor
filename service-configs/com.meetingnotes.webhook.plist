@@ -29,6 +29,11 @@
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/Users/CHANGEME/.nvm/versions/node/v22.x.x/bin</string>
 
+        <!-- Alternative: specify copilot path directly (find with: which copilot) -->
+        <!-- This is simpler than managing PATH if copilot is the only npm tool needed -->
+        <key>COPILOT_PATH</key>
+        <string>/Users/CHANGEME/.nvm/versions/node/v22.x.x/bin/copilot</string>
+
         <!-- Prevent git from prompting for credentials (would hang the daemon) -->
         <key>GIT_TERMINAL_PROMPT</key>
         <string>0</string>
