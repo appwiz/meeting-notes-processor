@@ -12,13 +12,16 @@ Sends a transcript file to the webhook daemon for processing.
 
 Usage:
     uv run send_transcript.py <transcript_file>
+    uv run send_transcript.py -h myhost:1234 <transcript_file>
 
 Example:
     uv run send_transcript.py examples/q1-planning-sarah.txt
+    uv run send_transcript.py -h localhost:9999 examples/q1-planning-sarah.txt
 """
 
 import sys
 import os
+import argparse
 import requests
 import json
 
@@ -80,18 +83,30 @@ def send_to_webhook(filepath, webhook_url="http://localhost:9876/webhook"):
 
 
 def main():
-    if len(sys.argv) < 2 or len(sys.argv) > 3:
-        print("Usage: uv run send_transcript.py <transcript_file> [webhook_url]")
-        print()
-        print("Examples:")
-        print("  uv run send_transcript.py examples/q1-planning-sarah.txt")
-        print("  uv run send_transcript.py examples/dunder-mifflin-sales.txt")
-        print("  uv run send_transcript.py transcript.txt http://localhost:9876/webhook")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Send a transcript file to the webhook daemon for processing.",
+        add_help=False  # Disable default -h so we can use it for host
+    )
+    parser.add_argument(
+        '-h', '--host',
+        metavar='HOST:PORT',
+        default='localhost:9876',
+        help='Host and port to send to (default: localhost:9876)'
+    )
+    parser.add_argument(
+        '--help',
+        action='help',
+        help='Show this help message and exit'
+    )
+    parser.add_argument(
+        'transcript_file',
+        help='Path to the transcript file to send'
+    )
     
-    filepath = sys.argv[1]
-    webhook_url = sys.argv[2] if len(sys.argv) == 3 else "http://localhost:9876/webhook"
-    success = send_to_webhook(filepath, webhook_url)
+    args = parser.parse_args()
+    
+    webhook_url = f"http://{args.host}/webhook"
+    success = send_to_webhook(args.transcript_file, webhook_url)
     sys.exit(0 if success else 1)
 
 
