@@ -391,5 +391,89 @@ class TestEnsureUniqueFilename:
             assert result == os.path.join(tmpdir, '20251230-test-3.txt')
 
 
+class TestBuildCalendarAwarePrompt:
+    """Tests for build_calendar_aware_prompt() function."""
+
+    def test_includes_transcript_time_when_provided(self):
+        """Should include transcript receipt time in prompt when provided."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context='',
+            transcript_time='15:09'
+        )
+        
+        assert '15:09' in result
+        assert 'transcript file was received' in result.lower()
+
+    def test_includes_spontaneous_meeting_guidance(self):
+        """Should include guidance about detecting spontaneous meetings."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context='',
+            transcript_time='15:09'
+        )
+        
+        # Key phrases that should be in the prompt
+        assert 'SPONTANEOUS' in result
+        assert 'NOT on the calendar' in result
+        # Check for guidance about when not to match
+        assert 'NOT a match' in result or 'do NOT match' in result
+
+    def test_includes_ongoing_meeting_warning(self):
+        """Should warn about not matching to meetings still in progress."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context='',
+            transcript_time='15:09'
+        )
+        
+        # Should warn that a meeting ending at 15:30 can't match a 15:09 transcript
+        assert 'ONGOING' in result or 'STILL IN PROGRESS' in result
+
+    def test_includes_content_validation_guidance(self):
+        """Should include guidance to validate match via transcript content."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context='',
+            transcript_time='15:35'
+        )
+        
+        # Should include content-based validation step
+        assert 'Content-based validation' in result or 'content check' in result.lower()
+
+    def test_works_without_transcript_time(self):
+        """Should work when transcript_time is None (backward compatibility)."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context=''
+        )
+        
+        # Should still work, just without time context
+        assert 'CALENDAR CONTEXT' in result
+        assert 'Test prompt' in result
+
+    def test_includes_spontaneous_property_guidance(self):
+        """Should mention adding :SPONTANEOUS: property for unmatched meetings."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context='',
+            transcript_time='15:09'
+        )
+        
+        assert ':SPONTANEOUS:' in result
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
