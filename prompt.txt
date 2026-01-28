@@ -1,40 +1,45 @@
 Summarize the transcript in the input file. Include:
 
 - A meaningful document title. Include the meeting name if you know it.
-- A single sentence TL;DR up top
-- A list of agreed-upon actions, with who will do them
-- Any open questions left unresolved
-- A brief summary of the discussion
 - org-mode property drawer for :PARTICIPANTS:, :TOPIC:, and :SLUG:
 - the tags :note:transcribed:
+- A single sentence TL;DR up top
+- A list of agreed-upon actions, with who will do them. Actions should
+  only be assigned to named participants.
+- Any open questions left unresolved
+- A brief summary of the discussion
 
 The :SLUG: property should be a 2-5 word hyphenated slug that describes the
 main topic (e.g., "quarterly-planning", "ai-coaching-discussion"). Use only
 lowercase letters, numbers, and hyphens. This will be used for the filename.
-
-- For 1:1 meetings (exactly 2 participants, one being Edd): ALWAYS use "firstname-edd-1-1" format
-  (e.g., "marion-edd-1-1", "thabani-edd-1-1"). Never use topic-based slugs for 1:1s.
-- For small groups (3-4 people): include key names (e.g., "mia-brian-edd-tpm")
-- For large meetings (5+): use meeting type (e.g., "engineering-town-hall", "cip-slt-sync")
 
 Format this in org format, as used with org-mode in emacs.
 
 The user's name is Edd, which you may hear as Ed. His full name is
 Edd Wilder-James.
 
+IMPORTANT: Whenever possible refer to participants by their full name
+if you know it. This helps consuming agents attribute comments to the
+right person.
+
 The title is the first line, introduced by two asterisks ** as a second
 level org heading. Make this as meaningful as you can, using the whole
-context of the meeting.
+context of the meeting. If it's obvious that this is a team meeting then
+put the team name in square brackets as the first thing, for example
+"** [Engineering] Ops Sync: Model Launches, Capacity Planning"
+
+Do not wrap lines that are part of headers (starting with one or more *) or
+that are part of lists, it will break the formatting.
 
 Do not vary from the org-mode formatting. You can use emoji but do not
 create invalid org files. Use the hyphen - for bulleted lists, not
 asterisk. use `- [ ]` to denote actions. Here's an example format:
 
 <example>
-** Meeting with April about things :note:transcribed:
+** Meeting with April Leonard about things :note:transcribed:
 [2025-12-02 Tue 22:32]
 :PROPERTIES:
-:PARTICIPANTS: April, Edd
+:PARTICIPANTS: April Leonard, Edd Wilder-James
 :TOPIC: A test meeting.
 :SLUG: test-meeting-april
 :END:
@@ -62,8 +67,7 @@ use the timestamp of the input file.
 
 Do not include citations to the transcript anywhere.
 
-Ensure each line is wrapped to max 80 columns, apart from headings that begin
-with a * and any list items.
+Ensure each line is wrapped to max 80 columns, excepting headings and list items.
 
 Input file is {input_file}.
 Write the resulting org content to {output_file}
