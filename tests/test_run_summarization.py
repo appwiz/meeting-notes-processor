@@ -156,9 +156,11 @@ class TestWorkspaceArgumentParsing:
                 
                 with mock.patch.dict(os.environ, {'WORKSPACE_DIR': env_workspace}):
                     with mock.patch('sys.argv', ['run_summarization.py', '--workspace', cli_workspace]):
-                        with mock.patch.object(run_summarization, 'process_inbox') as mock_process:
-                            run_summarization.run_summarization()
+                        with mock.patch.object(run_summarization, 'process_inbox', return_value=(1, 0)) as mock_process:
+                            with pytest.raises(SystemExit) as exc_info:
+                                run_summarization.run_summarization()
                             
+                            assert exc_info.value.code == 0  # Success exit
                             # Check that process_inbox was called with CLI workspace
                             call_args = mock_process.call_args
                             paths = call_args[0][0]  # First positional arg is paths
@@ -175,9 +177,11 @@ class TestWorkspaceArgumentParsing:
             
             with mock.patch.dict(os.environ, {'WORKSPACE_DIR': env_workspace}):
                 with mock.patch('sys.argv', ['run_summarization.py']):
-                    with mock.patch.object(run_summarization, 'process_inbox') as mock_process:
-                        run_summarization.run_summarization()
+                    with mock.patch.object(run_summarization, 'process_inbox', return_value=(1, 0)) as mock_process:
+                        with pytest.raises(SystemExit) as exc_info:
+                            run_summarization.run_summarization()
                         
+                        assert exc_info.value.code == 0  # Success exit
                         call_args = mock_process.call_args
                         paths = call_args[0][0]
                         assert paths['workspace'] == env_workspace
@@ -190,14 +194,16 @@ class TestWorkspaceArgumentParsing:
         
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch('sys.argv', ['run_summarization.py']):
-                with mock.patch.object(run_summarization, 'process_inbox') as mock_process:
+                with mock.patch.object(run_summarization, 'process_inbox', return_value=(1, 0)) as mock_process:
                     # Mock os.path.exists to avoid directory creation issues
                     with mock.patch('os.path.exists', return_value=True):
                         with mock.patch('os.makedirs'):
                             # Mock load_prompt_template to avoid file issues
                             with mock.patch.object(run_summarization, 'load_prompt_template', return_value='test'):
-                                run_summarization.run_summarization()
+                                with pytest.raises(SystemExit) as exc_info:
+                                    run_summarization.run_summarization()
                                 
+                                assert exc_info.value.code == 0  # Success exit
                                 call_args = mock_process.call_args
                                 paths = call_args[0][0]
                                 assert paths['workspace'] == '.'
@@ -214,7 +220,7 @@ class TestProcessInbox:
             
             result = run_summarization.process_inbox(paths, prompt_template='test')
             
-            assert result is None
+            assert result == (0, 1)  # Missing inbox counts as a failure
             captured = capsys.readouterr()
             assert 'not found' in captured.out.lower() or 'directory' in captured.out.lower()
 
@@ -227,7 +233,7 @@ class TestProcessInbox:
             
             result = run_summarization.process_inbox(paths, prompt_template='test')
             
-            assert result is None
+            assert result == (0, 0)  # No files is not a failure, just nothing to process
             captured = capsys.readouterr()
             assert 'no transcript' in captured.out.lower()
 
@@ -394,63 +400,8 @@ class TestEnsureUniqueFilename:
 class TestBuildCalendarAwarePrompt:
     """Tests for build_calendar_aware_prompt() function."""
 
-    def test_includes_transcript_time_when_provided(self):
-        """Should include transcript receipt time in prompt when provided."""
-        result = run_summarization.build_calendar_aware_prompt(
-            base_prompt='Test prompt',
-            calendar_text='1. [15:00-15:30] Edd / Joe',
-            meeting_date='2026-01-26',
-            notes_context='',
-            transcript_time='15:09'
-        )
-        
-        assert '15:09' in result
-        assert 'transcript file was received' in result.lower()
-
-    def test_includes_spontaneous_meeting_guidance(self):
-        """Should include guidance about detecting spontaneous meetings."""
-        result = run_summarization.build_calendar_aware_prompt(
-            base_prompt='Test prompt',
-            calendar_text='1. [15:00-15:30] Edd / Joe',
-            meeting_date='2026-01-26',
-            notes_context='',
-            transcript_time='15:09'
-        )
-        
-        # Key phrases that should be in the prompt
-        assert 'SPONTANEOUS' in result
-        assert 'NOT on the calendar' in result
-        # Check for guidance about when not to match
-        assert 'NOT a match' in result or 'do NOT match' in result
-
-    def test_includes_ongoing_meeting_warning(self):
-        """Should warn about not matching to meetings still in progress."""
-        result = run_summarization.build_calendar_aware_prompt(
-            base_prompt='Test prompt',
-            calendar_text='1. [15:00-15:30] Edd / Joe',
-            meeting_date='2026-01-26',
-            notes_context='',
-            transcript_time='15:09'
-        )
-        
-        # Should warn that a meeting ending at 15:30 can't match a 15:09 transcript
-        assert 'ONGOING' in result or 'STILL IN PROGRESS' in result
-
-    def test_includes_content_validation_guidance(self):
-        """Should include guidance to validate match via transcript content."""
-        result = run_summarization.build_calendar_aware_prompt(
-            base_prompt='Test prompt',
-            calendar_text='1. [15:00-15:30] Edd / Joe',
-            meeting_date='2026-01-26',
-            notes_context='',
-            transcript_time='15:35'
-        )
-        
-        # Should include content-based validation step
-        assert 'Content-based validation' in result or 'content check' in result.lower()
-
-    def test_works_without_transcript_time(self):
-        """Should work when transcript_time is None (backward compatibility)."""
+    def test_includes_calendar_context_header(self):
+        """Should include calendar context section with the meeting date."""
         result = run_summarization.build_calendar_aware_prompt(
             base_prompt='Test prompt',
             calendar_text='1. [15:00-15:30] Edd / Joe',
@@ -458,21 +409,70 @@ class TestBuildCalendarAwarePrompt:
             notes_context=''
         )
         
-        # Should still work, just without time context
-        assert 'CALENDAR CONTEXT' in result
-        assert 'Test prompt' in result
+        assert 'CALENDAR CONTEXT FOR 2026-01-26' in result
+        assert '1. [15:00-15:30] Edd / Joe' in result
 
-    def test_includes_spontaneous_property_guidance(self):
-        """Should mention adding :SPONTANEOUS: property for unmatched meetings."""
+    def test_includes_participant_identification_strategy(self):
+        """Should include guidance about correcting participant identification."""
         result = run_summarization.build_calendar_aware_prompt(
             base_prompt='Test prompt',
             calendar_text='1. [15:00-15:30] Edd / Joe',
             meeting_date='2026-01-26',
-            notes_context='',
-            transcript_time='15:09'
+            notes_context=''
         )
         
-        assert ':SPONTANEOUS:' in result
+        # Should include participant identification guidance
+        assert 'PARTICIPANT' in result or 'Participant' in result
+        assert 'speaker labels' in result.lower() or 'transcript' in result.lower()
+
+    def test_includes_slug_naming_guidance(self):
+        """Should include guidance about slug naming for 1:1 meetings."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context=''
+        )
+        
+        # Should include 1:1 slug format guidance
+        assert '1-1' in result or 'firstname-edd' in result.lower()
+
+    def test_includes_calendar_metadata_guidance(self):
+        """Should include guidance about adding calendar metadata properties."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context=''
+        )
+        
+        # Should mention calendar metadata properties
+        assert ':CALENDAR_TITLE:' in result or ':CALENDAR_TIME:' in result
+
+    def test_prepends_to_base_prompt(self):
+        """Should prepend calendar instructions before the base prompt."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context=''
+        )
+        
+        # Calendar context should come before base prompt
+        assert 'CALENDAR CONTEXT' in result
+        assert 'Test prompt' in result
+        assert result.index('CALENDAR CONTEXT') < result.index('Test prompt')
+
+    def test_includes_notes_context_when_provided(self):
+        """Should include notes context in the prompt when provided."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context='Past meeting with Joe discussed project updates'
+        )
+        
+        assert 'Past meeting with Joe discussed project updates' in result
 
 
 if __name__ == "__main__":

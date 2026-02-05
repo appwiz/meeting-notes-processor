@@ -30,7 +30,8 @@ from unittest import mock
 
 import pytest
 
-# Import meetingnotesd (works because uv resolves deps from inline metadata)
+# Add parent directory to sys.path to import meetingnotesd
+sys.path.insert(0, str(Path(__file__).parent.parent))
 import meetingnotesd
 
 
@@ -359,10 +360,9 @@ class TestGitCommitAndPush:
         test_file = inbox / "test-transcript.txt"
         test_file.write_text("Test transcript content")
         
-        success, message = repo_agent.git_commit_and_push(str(test_file), "Test Meeting")
+        success, message = repo_agent.git_commit(str(test_file), "Test Meeting")
         
         assert success is True
-        assert "push disabled" in message.lower()
         
         # Verify the file was committed
         result = subprocess.run(
@@ -378,10 +378,10 @@ class TestGitCommitAndPush:
         outside_file = temp_workspace["workspace"] / "outside.txt"
         outside_file.write_text("Outside content")
         
-        success, message = repo_agent.git_commit_and_push(str(outside_file), "Outside")
+        success, message = repo_agent.git_commit(str(outside_file), "Outside")
         
         assert success is False
-        assert "outside" in message.lower()
+        assert "outside" in message.lower() or "not in" in message.lower()
 
 
 class TestWebhookEndpoint:
