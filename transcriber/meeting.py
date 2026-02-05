@@ -190,7 +190,7 @@ def start_sender(device: str, mic: str | None = None) -> int:
         return existing
 
     cmd = [
-        sys.executable, str(VBAN_SEND_SCRIPT),
+        "uv", "run", str(VBAN_SEND_SCRIPT),
         "-d", device,
         "-t", PILOT_HOST,
         "-p", str(VBAN_PORT),
