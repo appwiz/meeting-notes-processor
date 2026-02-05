@@ -649,3 +649,50 @@ uv run send_transcript.py transcript.txt http://localhost:9876/webhook
 - [AGENTS.md](AGENTS.md) — Instructions for AI coding agents working on this project
 - [PRD.md](PRD.md) — Product requirements and implementation details
 - [examples/](examples/) — Sample transcripts for testing
+
+---
+
+## Copilot Skills
+
+This repo includes skills for GitHub Copilot CLI that extend meeting notes functionality.
+
+### WorkIQ Notes Skill
+
+Generate meeting notes for meetings you missed by querying Microsoft 365 Copilot (WorkIQ).
+
+**Use case:** You missed a meeting that was recorded in Teams/Stream. Instead of watching the recording, ask Copilot to generate org-mode notes from WorkIQ's understanding of the meeting.
+
+**How it works:**
+1. Copilot queries WorkIQ for meeting details (attendees, topics, decisions, actions)
+2. Formats the response into your standard org-mode template
+3. Writes to your notes directory with proper git workflow
+
+**Example:**
+```
+You: "Generate notes for the CIP SLT Monthly Planning Review on 2026-02-04"
+
+Copilot:
+- Queries WorkIQ for that meeting
+- Creates ~/git/meeting-notes/notes/20260204-cip-slt-monthly-planning.org
+- Commits and pushes automatically
+```
+
+**Setup:**
+1. Symlink the skill to your Copilot skills directory:
+   ```bash
+   ln -sf ~/git/meeting-notes-processor/skills/workiq-notes ~/.copilot/skills/workiq-notes
+   ```
+2. Ensure WorkIQ MCP server is configured and EULA accepted
+3. Configure `data_repo` in `config.yaml` or use default `~/git/meeting-notes`
+
+**Limitations:**
+- WorkIQ returns excerpts/snippets, not full transcripts
+- Some action item owners may be unclear if not explicitly stated in meeting
+- Works best for meetings recorded in Teams/Stream
+- Participant lists may be incomplete (only speakers identified in transcript)
+
+**Helper script:** `skills/workiq-notes/write_note.py` handles file writing and git operations. Can be used standalone:
+```bash
+cat note.org | uv run skills/workiq-notes/write_note.py \
+  --date 2026-02-04 --slug my-meeting --title "My Meeting"
+```
