@@ -39,7 +39,7 @@ curl -X POST http://localhost:9876/calendar \
 from flask import Flask, request, jsonify
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import yaml
 from pathlib import Path
@@ -473,6 +473,63 @@ def sanitize_filename(title):
     return sanitized
 
 
+def _build_transcript_header(data: dict, transcript: str) -> str:
+    """Build a YAML front matter header and prepend it to the transcript.
+    
+    Uses timing fields from the webhook payload if available,
+    otherwise falls back to the receipt timestamp.
+    
+    Args:
+        data: The webhook JSON payload (may contain meeting_start, meeting_end, duration, recording_source)
+        transcript: The raw transcript text
+    
+    Returns:
+        Transcript with YAML front matter prepended
+    """
+    now = datetime.now().astimezone()
+    header = {}
+
+    # Extract timing fields from payload
+    meeting_start = data.get('meeting_start') or data.get('start_time')
+    meeting_end = data.get('meeting_end') or data.get('end_time')
+    duration = data.get('duration')  # seconds
+    source = data.get('recording_source', 'macwhisper')
+
+    if meeting_start:
+        header['meeting_start'] = meeting_start
+    if meeting_end:
+        header['meeting_end'] = meeting_end
+
+    # If we have duration but are missing start/end, estimate
+    if duration and not meeting_start and not meeting_end:
+        end = now
+        start = now - timedelta(seconds=int(duration))
+        header['meeting_start'] = start.isoformat()
+        header['meeting_end'] = end.isoformat()
+    elif duration and meeting_start and not meeting_end:
+        try:
+            start_dt = datetime.fromisoformat(meeting_start)
+            header['meeting_end'] = (start_dt + timedelta(seconds=int(duration))).isoformat()
+        except (ValueError, TypeError):
+            pass
+
+    # If we still have nothing, use receipt time as meeting_end
+    if 'meeting_start' not in header and 'meeting_end' not in header:
+        header['meeting_end'] = now.isoformat()
+
+    header['recording_source'] = source
+    header['received_at'] = now.isoformat()
+
+    # Build YAML front matter
+    lines = ['---']
+    for key, value in header.items():
+        lines.append(f'{key}: {value}')
+    lines.append('---')
+    lines.append('')
+
+    return '\n'.join(lines) + transcript
+
+
 def generate_filename(title):
     """
     Generate a unique filename with timestamp and sanitized title.
@@ -612,13 +669,21 @@ def calendar():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """
-    Main webhook endpoint for receiving MacWhisper transcripts.
+    Main webhook endpoint for receiving transcripts.
     
     Expected payload:
     {
         "title": "Meeting title",
-        "transcript": "Full transcript text..."
+        "transcript": "Full transcript text...",
+        "meeting_start": "2026-02-05T14:00:00-08:00",  // optional
+        "meeting_end": "2026-02-05T15:03:00-08:00",    // optional
+        "duration": 3780,                                // optional, seconds
+        "recording_source": "macwhisper"                 // optional
     }
+    
+    If the transcript already contains YAML front matter (starts with '---'),
+    it is saved as-is (e.g. from the Transcriber appliance).
+    Otherwise, a YAML header is injected with timing metadata.
     """
     try:
         # Validate content type
@@ -657,6 +722,10 @@ def webhook():
                 'status': 'error',
                 'message': 'Transcript cannot be empty'
             }), 400
+
+        # Inject YAML front matter if not already present
+        if not transcript.lstrip().startswith('---'):
+            transcript = _build_transcript_header(data, transcript)
 
         # Validate transcript size (256KB limit - covers very long meetings)
         MAX_TRANSCRIPT_SIZE = 256 * 1024  # 256 KB

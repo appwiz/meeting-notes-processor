@@ -29,6 +29,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import yaml
 
 # Add parent directory to sys.path to import meetingnotesd
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -462,6 +463,158 @@ class TestBackgroundSync:
         agent.start_background_sync()
         
         assert agent._sync_thread is None
+
+
+class TestBuildTranscriptHeader:
+    """Tests for _build_transcript_header() YAML front matter injection."""
+
+    def test_basic_header_with_no_timing(self):
+        """When payload has no timing fields, header uses receipt time as meeting_end."""
+        data = {'title': 'Test', 'transcript': 'Hello'}
+        result = meetingnotesd._build_transcript_header(data, 'Hello')
+
+        assert result.startswith('---\n')
+        assert '\n---\n' in result
+        assert 'recording_source: macwhisper' in result
+        assert 'received_at:' in result
+        assert 'meeting_end:' in result
+        assert result.endswith('Hello')
+
+    def test_header_with_explicit_start_end(self):
+        """When payload has meeting_start and meeting_end, they're used directly."""
+        data = {
+            'title': 'Test',
+            'transcript': 'Content',
+            'meeting_start': '2026-02-05T14:00:00-08:00',
+            'meeting_end': '2026-02-05T15:03:00-08:00',
+        }
+        result = meetingnotesd._build_transcript_header(data, 'Content')
+
+        assert 'meeting_start: 2026-02-05T14:00:00-08:00' in result
+        assert 'meeting_end: 2026-02-05T15:03:00-08:00' in result
+        assert result.endswith('Content')
+
+    def test_header_with_duration_only(self):
+        """When payload has duration but no start/end, estimates from receipt time."""
+        data = {
+            'title': 'Test',
+            'transcript': 'Content',
+            'duration': 3600,  # 1 hour
+        }
+        result = meetingnotesd._build_transcript_header(data, 'Content')
+
+        assert 'meeting_start:' in result
+        assert 'meeting_end:' in result
+
+    def test_header_with_start_and_duration(self):
+        """When payload has meeting_start and duration, computes meeting_end."""
+        data = {
+            'title': 'Test',
+            'transcript': 'Content',
+            'meeting_start': '2026-02-05T14:00:00-08:00',
+            'duration': 3600,
+        }
+        result = meetingnotesd._build_transcript_header(data, 'Content')
+
+        assert 'meeting_start: 2026-02-05T14:00:00-08:00' in result
+        assert 'meeting_end: 2026-02-05T15:00:00-08:00' in result
+
+    def test_custom_recording_source(self):
+        """When payload specifies recording_source, it's used instead of default."""
+        data = {
+            'title': 'Test',
+            'transcript': 'Content',
+            'recording_source': 'transcriber',
+        }
+        result = meetingnotesd._build_transcript_header(data, 'Content')
+
+        assert 'recording_source: transcriber' in result
+
+    def test_header_is_valid_yaml(self):
+        """Generated header should be parseable as YAML."""
+        data = {
+            'title': 'Test',
+            'transcript': 'Content',
+            'meeting_start': '2026-02-05T14:00:00-08:00',
+            'meeting_end': '2026-02-05T15:03:00-08:00',
+        }
+        result = meetingnotesd._build_transcript_header(data, 'Content')
+
+        # Extract YAML portion
+        import re
+        match = re.search(r'^---\n(.*?)\n---\n', result, re.DOTALL)
+        assert match is not None
+        parsed = yaml.safe_load(match.group(1))
+        assert isinstance(parsed, dict)
+        assert 'recording_source' in parsed
+
+    def test_alternate_field_names(self):
+        """Should accept start_time/end_time as alternate field names."""
+        data = {
+            'title': 'Test',
+            'transcript': 'Content',
+            'start_time': '2026-02-05T14:00:00-08:00',
+            'end_time': '2026-02-05T15:03:00-08:00',
+        }
+        result = meetingnotesd._build_transcript_header(data, 'Content')
+
+        assert 'meeting_start: 2026-02-05T14:00:00-08:00' in result
+        assert 'meeting_end: 2026-02-05T15:03:00-08:00' in result
+
+
+class TestWebhookHeaderInjection:
+    """Tests for YAML header injection in the webhook endpoint."""
+
+    @pytest.fixture
+    def test_client(self, minimal_config, temp_workspace, monkeypatch):
+        """Create a Flask test client."""
+        monkeypatch.setattr("meetingnotesd.config", minimal_config)
+        agent = meetingnotesd.RepoAgent(minimal_config)
+        monkeypatch.setattr("meetingnotesd.agent", agent)
+        meetingnotesd.app.config["TESTING"] = True
+        return meetingnotesd.app.test_client(), agent
+
+    def test_webhook_injects_header_for_plain_transcript(self, test_client, temp_workspace):
+        """Plain transcript should have YAML header injected."""
+        client, agent = test_client
+        response = client.post(
+            "/webhook",
+            json={"title": "Team Sync", "transcript": "Alice: Hello\nBob: Hi"},
+            content_type="application/json",
+        )
+        assert response.status_code == 200
+
+        # Find the written file
+        inbox = Path(agent.inbox_dir)
+        files = list(inbox.glob("*.txt"))
+        assert len(files) == 1
+
+        content = files[0].read_text()
+        assert content.startswith('---\n')
+        assert 'recording_source: macwhisper' in content
+        assert 'Alice: Hello' in content
+
+    def test_webhook_preserves_existing_header(self, test_client, temp_workspace):
+        """Transcript with existing YAML front matter should NOT get double-header."""
+        client, agent = test_client
+        transcript = "---\nmeeting_start: 2026-02-05T14:00:00-08:00\nrecording_source: transcriber\n---\n\nThe transcript."
+        response = client.post(
+            "/webhook",
+            json={"title": "From Transcriber", "transcript": transcript},
+            content_type="application/json",
+        )
+        assert response.status_code == 200
+
+        # Find the written file
+        inbox = Path(agent.inbox_dir)
+        files = list(inbox.glob("*.txt"))
+        assert len(files) == 1
+
+        content = files[0].read_text()
+        # Should have exactly one header (the original), not two
+        assert content.count('---\n') == 2  # opening and closing
+        assert 'recording_source: transcriber' in content
+        assert 'recording_source: macwhisper' not in content
 
 
 if __name__ == "__main__":
