@@ -11,26 +11,33 @@ Configure SoundSource to route meeting audio into BlackHole 2ch for transcriptio
 ## What This Does
 
 ```
-┌─────────────── SoundSource ─────────────────┐
-│                                              │
-│  Zoom audio ──┬──► Your speakers (hear it)   │
-│               └──► BlackHole 2ch (capture)   │
-│                                              │
-│  Teams audio ─┬──► Your speakers (hear it)   │
-│               └──► BlackHole 2ch (capture)   │
-│                                              │
-│  Your mic ────────► BlackHole 2ch (capture)   │
-│  (via Audio Tap)                             │
-│                                              │
-└──────────────────────────────────────────────┘
-        │
-   BlackHole 2ch (input device)
-        │
-   vban_send.py → VBAN/UDP → pilot
+┌─────────── SoundSource ──────────┐
+│                                  │
+│  Zoom audio ─┬─► Speakers        │
+│              └─► BlackHole 2ch   │
+│                                  │
+│  Teams audio ┬─► Speakers        │
+│              └─► BlackHole 2ch   │
+│                                  │
+└──────────────────────────────────┘
+
+┌─────────── vban_send.py ─────────┐
+│                                  │
+│  BlackHole 2ch ──► ┐             │
+│  (remote audio)    ├─ mix ─► VBAN → pilot
+│  Your mic ────────► ┘             │
+│  (your voice)                    │
+└──────────────────────────────────┘
 ```
 
-You hear the meeting normally. BlackHole captures both sides of the
-conversation. The VBAN sender streams it to pilot for transcription.
+SoundSource routes remote participant audio (Zoom/Teams) to BlackHole.
+The VBAN sender captures from BlackHole AND your microphone simultaneously,
+mixing both streams in software. You hear the meeting normally through
+your speakers. Both sides of the conversation reach pilot for transcription.
+
+> **Note:** SoundSource handles per-app *output* routing — it cannot
+> route microphone input to another device. Mic capture is handled
+> automatically by the VBAN sender's dual-input mixing mode.
 
 ## Step-by-Step Setup
 
@@ -59,34 +66,19 @@ Click the SoundSource icon in the menu bar (🔈 with a grid).
 1. Find **Microsoft Teams** in the Applications list
 2. Same as Zoom: set Output to Multi-Output with your speakers + BlackHole 2ch
 
-### 5. Route your microphone to BlackHole (captures your side)
-
-This step captures YOUR voice alongside the remote participants:
-
-1. In SoundSource, scroll to the **Input Devices** section at the bottom
-2. Find your microphone (e.g., "Yeti Stereo Microphone")
-3. Click **Effects** or the routing options
-4. Use **Audio Tap** or **Routing** to send a copy to BlackHole 2ch
-
-**Alternative approach** (if Audio Tap isn't available):
-1. Open **Audio MIDI Setup** (Spotlight → "Audio MIDI Setup")
-2. Click **+** → **Create Multi-Output Device**
-3. Check: ✅ Your speakers, ✅ BlackHole 2ch
-4. In SoundSource, set Zoom/Teams output to this Multi-Output Device
-
-### 6. Test the routing
+### 5. Test the routing
 
 ```bash
 # From the meeting-notes-processor/transcriber directory:
 
-# List devices — you should see BlackHole 2ch as an input
+# List devices — you should see BlackHole 2ch as an input and your mic
 uv run meeting.py devices
 
 # Check status
 uv run meeting.py status
 
-# Quick test: start streaming, play audio in Zoom
-uv run vban/vban_send.py -d "BlackHole 2ch" -t pilot
+# Quick test: start streaming with both BlackHole + mic
+uv run vban/vban_send.py -d "BlackHole 2ch" --mic Yeti -t pilot
 # (speak into mic, play a Zoom test meeting)
 # Ctrl+C to stop
 
@@ -109,8 +101,9 @@ uv run meeting.py stop
 uv run meeting.py status
 ```
 
-The `meeting.py` script auto-detects BlackHole as the best audio source,
-starts VBAN streaming, triggers recording on pilot, and handles cleanup.
+The `meeting.py` script auto-detects BlackHole as the primary audio source
+and your mic (Yeti > built-in) for mixing. It starts the VBAN sender in
+dual-input mode, triggers recording on pilot, and handles cleanup.
 
 ## Troubleshooting
 
@@ -121,11 +114,16 @@ starts VBAN streaming, triggers recording on pilot, and handles cleanup.
 ### No audio reaching pilot
 - Check VBAN receiver: `cd transcriber && make logs-vban`
 - Verify SoundSource routing: Play audio in Zoom → check SoundSource meters
-- Test direct: `uv run vban/vban_send.py -d "BlackHole 2ch" -t pilot --debug`
+- Test direct: `uv run vban/vban_send.py -d "BlackHole 2ch" --mic Yeti -t pilot --debug`
 
-### Only hearing one side of conversation
-- Ensure Step 5 is done (mic → BlackHole routing)
-- SoundSource should show your mic being routed to BlackHole
+### Only hearing remote side (no mic)
+- Check mic detection: `uv run meeting.py devices` (should show 🎤 line)
+- Specify mic manually: `uv run meeting.py start "Test" -m "Yeti Stereo"`
+- Check VBAN sender log: `cat /tmp/meeting-vban-sender.log` (should say "mixed mode")
+
+### Only hearing your voice (no remote audio)
+- Verify SoundSource is routing Zoom/Teams output to BlackHole 2ch
+- Check SoundSource shows the Multi-Output with BlackHole checked
 
 ### Echo or feedback
 - Make sure BlackHole is NOT set as your default output

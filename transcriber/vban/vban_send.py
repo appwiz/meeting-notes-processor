@@ -12,9 +12,15 @@ VBAN Sender — streams audio from a macOS audio device over UDP.
 Captures audio from Zoom/Teams virtual audio devices (or any input device)
 and sends it as VBAN protocol packets to a remote receiver.
 
+Supports dual-input mixing: capture from a primary device (e.g., BlackHole 2ch
+for remote participants) AND a microphone (for your voice), mix them together,
+and send the combined stream. This eliminates the need for external audio
+routing software to capture both sides of a conversation.
+
 Usage:
   uv run vban_send.py                              # list devices, then start with defaults
   uv run vban_send.py -d ZoomAudioDevice -t pilot   # stream Zoom audio to pilot
+  uv run vban_send.py -d "BlackHole 2ch" --mic Yeti -t pilot  # mix BlackHole + mic
   uv run vban_send.py --list-devices                # just list available input devices
 
 The VBAN protocol sends PCM audio in UDP packets with a 28-byte header.
@@ -23,10 +29,12 @@ Designed to pair with vban_recv.py on the transcription appliance.
 
 import argparse
 import logging
+import queue
 import signal
 import socket
 import struct
 import sys
+import threading
 import time
 
 import numpy as np
@@ -264,6 +272,201 @@ def run_sender(
 
 
 # ---------------------------------------------------------------------------
+# Dual-Input Mixed Sender
+# ---------------------------------------------------------------------------
+
+
+def run_sender_mixed(
+    target_host: str,
+    target_port: int,
+    primary_device: str | int,
+    mic_device: str | int,
+    sample_rate: int,
+    channels: int,
+    stream_name: str,
+    mic_gain: float = 1.0,
+):
+    """Capture from two audio inputs, mix them, and send VBAN packets.
+
+    This opens two InputStream objects simultaneously — one for the primary
+    device (e.g., BlackHole 2ch carrying remote participant audio from
+    Zoom/Teams) and one for the microphone (capturing the local user's voice).
+    The two streams are mixed together into mono and sent as a single VBAN
+    stream.
+
+    This eliminates the need for external audio routing to combine mic input
+    with app output — the mixing happens entirely in software.
+    """
+    # Resolve devices
+    if isinstance(primary_device, str):
+        primary_idx = find_device(primary_device)
+    else:
+        primary_idx = primary_device
+
+    if isinstance(mic_device, str):
+        mic_idx = find_device(mic_device)
+    else:
+        mic_idx = mic_device
+
+    primary_info = sd.query_devices(primary_idx)
+    mic_info = sd.query_devices(mic_idx)
+
+    logger.info(f"Primary device: [{primary_idx}] {primary_info['name']}")
+    logger.info(f"Mic device:     [{mic_idx}] {mic_info['name']}")
+    logger.info(f"Target: {target_host}:{target_port} stream={stream_name}")
+    logger.info(
+        f"Format: {sample_rate}Hz, {channels}ch, int16, "
+        f"{SAMPLES_PER_PACKET} samples/pkt, mic_gain={mic_gain}"
+    )
+
+    # Resolve target IP
+    target_ip = socket.gethostbyname(target_host)
+    logger.info(f"Resolved {target_host} → {target_ip}")
+
+    # UDP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sr_idx = sr_index(sample_rate)
+
+    # Thread-safe queues for audio data from each stream
+    primary_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=200)
+    mic_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=200)
+
+    frame_counter = 0
+    packets_sent = 0
+    running = True
+
+    def signal_handler(sig, frame):
+        nonlocal running
+        logger.info("Shutting down...")
+        running = False
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    def primary_callback(indata, frames, time_info, status):
+        if status:
+            logger.debug(f"Primary audio status: {status}")
+        if not running:
+            raise sd.CallbackAbort
+        try:
+            primary_q.put_nowait(indata.copy())
+        except queue.Full:
+            pass  # drop oldest data rather than blocking the audio thread
+
+    def mic_callback(indata, frames, time_info, status):
+        if status:
+            logger.debug(f"Mic audio status: {status}")
+        if not running:
+            raise sd.CallbackAbort
+        try:
+            mic_q.put_nowait(indata.copy())
+        except queue.Full:
+            pass
+
+    def mixer_thread():
+        """Read from both queues, mix, and send VBAN packets."""
+        nonlocal frame_counter, packets_sent
+
+        while running:
+            # Get primary audio (blocking with timeout so we can check running)
+            try:
+                primary_data = primary_q.get(timeout=0.1)
+            except queue.Empty:
+                continue  # no primary data yet, keep waiting
+
+            # Get mic audio (non-blocking — use silence if mic is behind)
+            try:
+                mic_data = mic_q.get_nowait()
+            except queue.Empty:
+                mic_data = np.zeros_like(primary_data)
+
+            # Ensure same length (trim or pad mic to match primary)
+            if len(mic_data) < len(primary_data):
+                pad = np.zeros(
+                    (len(primary_data) - len(mic_data), mic_data.shape[1]),
+                    dtype=mic_data.dtype,
+                )
+                mic_data = np.concatenate([mic_data, pad])
+            elif len(mic_data) > len(primary_data):
+                mic_data = mic_data[: len(primary_data)]
+
+            # Mix: sum both streams, apply mic gain, clip to [-1, 1]
+            mixed = primary_data + (mic_data * mic_gain)
+            mixed = np.clip(mixed, -1.0, 1.0)
+
+            # Convert float32 → int16
+            pcm = (mixed * 32767).astype(np.int16)
+
+            # Send in chunks of SAMPLES_PER_PACKET
+            offset = 0
+            while offset < len(pcm):
+                chunk = pcm[offset : offset + SAMPLES_PER_PACKET]
+                actual_samples = len(chunk)
+
+                header = build_header(
+                    sr_idx, actual_samples, channels, frame_counter, stream_name
+                )
+                packet = header + chunk.tobytes()
+
+                try:
+                    sock.sendto(packet, (target_ip, target_port))
+                    frame_counter = (frame_counter + 1) & 0xFFFFFFFF
+                    packets_sent += 1
+                except OSError as e:
+                    logger.error(f"Send error: {e}")
+
+                offset += SAMPLES_PER_PACKET
+
+    # Start the mixer in a background thread
+    mixer = threading.Thread(target=mixer_thread, daemon=True)
+
+    try:
+        with sd.InputStream(
+            device=primary_idx,
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            blocksize=SAMPLES_PER_PACKET,
+            callback=primary_callback,
+        ), sd.InputStream(
+            device=mic_idx,
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            blocksize=SAMPLES_PER_PACKET,
+            callback=mic_callback,
+        ):
+            mixer.start()
+            logger.info(
+                "🎙  Streaming (mixed mode)... (Ctrl+C to stop)"
+            )
+            last_report = time.time()
+            while running:
+                time.sleep(0.5)
+                now = time.time()
+                if now - last_report >= 10:
+                    pps = packets_sent / (now - last_report)
+                    pq = primary_q.qsize()
+                    mq = mic_q.qsize()
+                    logger.info(
+                        f"Stats: {packets_sent} pkts ({pps:.0f}/s) "
+                        f"queues: primary={pq} mic={mq}"
+                    )
+                    packets_sent = 0
+                    last_report = now
+
+    except sd.PortAudioError as e:
+        logger.error(f"Audio error: {e}")
+        logger.error("Try running with --list-devices to see available devices")
+        sys.exit(1)
+    finally:
+        running = False
+        mixer.join(timeout=2)
+        sock.close()
+        logger.info("Mixed sender stopped.")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -276,6 +479,7 @@ def main():
 Examples:
   %(prog)s --list-devices
   %(prog)s -d ZoomAudioDevice -t pilot
+  %(prog)s -d "BlackHole 2ch" --mic Yeti -t pilot    # mix app audio + mic
   %(prog)s -d "Microsoft Teams" -t pilot -r 48000
   %(prog)s -d 9 -t 100.64.0.5 -p 6980
         """,
@@ -284,6 +488,17 @@ Examples:
         "-d", "--device",
         default="ZoomAudioDevice",
         help="Input device name (partial match) or index (default: ZoomAudioDevice)",
+    )
+    parser.add_argument(
+        "--mic",
+        default=None,
+        help="Secondary mic device to mix with primary (enables dual-input mode)",
+    )
+    parser.add_argument(
+        "--mic-gain",
+        type=float,
+        default=1.0,
+        help="Gain multiplier for mic audio in mixed mode (default: 1.0)",
     )
     parser.add_argument(
         "-t", "--target",
@@ -339,14 +554,32 @@ Examples:
     except ValueError:
         device = args.device
 
-    run_sender(
-        target_host=args.target,
-        target_port=args.port,
-        device=device,
-        sample_rate=args.rate,
-        channels=args.channels,
-        stream_name=args.stream_name,
-    )
+    # Dual-input mixed mode or single-device mode
+    if args.mic:
+        try:
+            mic = int(args.mic)
+        except ValueError:
+            mic = args.mic
+
+        run_sender_mixed(
+            target_host=args.target,
+            target_port=args.port,
+            primary_device=device,
+            mic_device=mic,
+            sample_rate=args.rate,
+            channels=args.channels,
+            stream_name=args.stream_name,
+            mic_gain=args.mic_gain,
+        )
+    else:
+        run_sender(
+            target_host=args.target,
+            target_port=args.port,
+            device=device,
+            sample_rate=args.rate,
+            channels=args.channels,
+            stream_name=args.stream_name,
+        )
 
 
 if __name__ == "__main__":

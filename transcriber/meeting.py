@@ -12,6 +12,11 @@ Meeting Recorder — one-command meeting capture and transcription.
 Manages the full pipeline: VBAN streaming → pilot recording → transcription.
 Designed to be the single command you run when a meeting starts.
 
+When using BlackHole 2ch (recommended), the VBAN sender automatically
+opens two input streams — BlackHole for remote participant audio and your
+microphone for your voice — and mixes them together. No external audio
+routing software needed for mic capture.
+
 Usage:
   uv run meeting.py start "Weekly Standup"       # begin recording
   uv run meeting.py stop                          # stop and transcribe
@@ -20,7 +25,7 @@ Usage:
 
 Prerequisites:
   - BlackHole 2ch installed on laptop
-  - SoundSource routing Zoom/Teams + mic → BlackHole 2ch
+  - SoundSource routing Zoom/Teams output → BlackHole 2ch
   - VBAN receiver running on pilot (make deploy-vban)
   - Transcriber running on pilot (make deploy)
 """
@@ -49,9 +54,17 @@ VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 
 # Audio device preference order (first match wins)
 DEVICE_PREFERENCE = [
-    "BlackHole 2ch",       # Best: full meeting audio via SoundSource routing
+    "BlackHole 2ch",       # Best: remote audio via SoundSource routing + mic mixed in software
     "ZoomAudioDevice",     # Fallback: Zoom remote participants only
     "Microsoft Teams",     # Fallback: Teams remote participants only
+]
+
+# Microphone preference order for dual-input mixing (when using BlackHole)
+MIC_PREFERENCE = [
+    "Yeti",                # Blue Yeti USB mic
+    "MacBook Air Mic",     # Built-in laptop mic
+    "MacBook Pro Mic",     # Built-in laptop mic
+    "Built-in Micro",      # Generic built-in mic
 ]
 
 VBAN_SEND_SCRIPT = Path(__file__).parent / "vban" / "vban_send.py"
@@ -78,7 +91,7 @@ def find_best_device() -> tuple[str, str]:
     """Find the best available audio input device.
     
     Returns (device_name, quality) where quality is 'full' or 'partial'.
-    'full' means both sides of conversation (via BlackHole + SoundSource).
+    'full' means both sides of conversation (BlackHole + mic mixed in software).
     'partial' means only remote participants (direct virtual device).
     """
     devices = sd.query_devices()
@@ -96,6 +109,31 @@ def find_best_device() -> tuple[str, str]:
     return None, None
 
 
+def find_mic_device() -> str | None:
+    """Find the best available microphone for dual-input mixing.
+
+    Searches MIC_PREFERENCE order, skipping BlackHole, Zoom, and Teams
+    virtual devices (those aren't real mics).
+    """
+    devices = sd.query_devices()
+    available = []
+    for d in devices:
+        if d["max_input_channels"] > 0:
+            name = d["name"].lower()
+            # Skip virtual audio devices — we want a real microphone
+            if any(skip in name for skip in ["blackhole", "zoom", "teams"]):
+                continue
+            available.append(d["name"])
+
+    for pref in MIC_PREFERENCE:
+        for name in available:
+            if pref.lower() in name.lower():
+                return name
+
+    # Fall back to any non-virtual input device
+    return available[0] if available else None
+
+
 def list_devices():
     """Show available input devices with recommendations."""
     devices = sd.query_devices()
@@ -106,13 +144,19 @@ def list_devices():
             name = d["name"]
             markers = []
             if "blackhole" in name.lower():
-                markers.append("★ RECOMMENDED (full conversation)")
+                markers.append("★ RECOMMENDED (app audio → mix with mic)")
             elif "zoom" in name.lower():
                 markers.append("⚡ Zoom (remote audio only)")
             elif "teams" in name.lower():
                 markers.append("⚡ Teams (remote audio only)")
             marker_str = f"  {' '.join(markers)}" if markers else ""
             print(f"  [{d['index']}] {name} (ch:{d['max_input_channels']}){marker_str}")
+
+    mic = find_mic_device()
+    if mic:
+        print(f"\n🎤 Detected mic for mixing: {mic}")
+    else:
+        print(f"\n⚠️  No mic detected for dual-input mixing")
     print()
 
 
@@ -134,8 +178,12 @@ def _sender_running() -> int | None:
         return None
 
 
-def start_sender(device: str) -> int:
-    """Start the VBAN sender in background. Returns PID."""
+def start_sender(device: str, mic: str | None = None) -> int:
+    """Start the VBAN sender in background. Returns PID.
+
+    If mic is provided, the sender runs in dual-input mixed mode,
+    capturing from both the primary device and the microphone.
+    """
     existing = _sender_running()
     if existing:
         logger.info(f"VBAN sender already running (PID {existing})")
@@ -147,6 +195,8 @@ def start_sender(device: str) -> int:
         "-t", PILOT_HOST,
         "-p", str(VBAN_PORT),
     ]
+    if mic:
+        cmd.extend(["--mic", mic])
 
     log_fh = open(LOG_FILE, "w")
     proc = subprocess.Popen(
@@ -157,7 +207,8 @@ def start_sender(device: str) -> int:
     )
 
     PID_FILE.write_text(str(proc.pid))
-    logger.info(f"VBAN sender started (PID {proc.pid}) → {device}")
+    mode = f"mixed ({device} + {mic})" if mic else device
+    logger.info(f"VBAN sender started (PID {proc.pid}) → {mode}")
     return proc.pid
 
 
@@ -269,14 +320,28 @@ def cmd_start(args):
         print(f"⚠️  Using {device_name} — only remote participants will be captured.")
         print(f"   For full conversation capture, configure SoundSource → BlackHole 2ch")
 
-    # 3. Start VBAN sender
+    # 3. Detect mic for dual-input mixing (only when using BlackHole)
+    mic_name = None
+    if quality == "full":
+        if args.mic:
+            mic_name = args.mic
+        else:
+            mic_name = find_mic_device()
+
+        if mic_name:
+            print(f"🎤 Mic for mixing: {mic_name}")
+        else:
+            print(f"⚠️  No mic detected — only remote participants will be captured.")
+            print(f"   Specify with -m/--mic, or check 'meeting.py devices'")
+
+    # 4. Start VBAN sender
     print(f"🎙  Audio source: {device_name}")
-    sender_pid = start_sender(device_name)
+    sender_pid = start_sender(device_name, mic=mic_name)
 
     # Give VBAN a moment to connect
     time.sleep(3)
 
-    # 4. Start recording on pilot
+    # 5. Start recording on pilot
     print(f"🔴 Starting recording: {title}")
     result = transcriber_start(title)
     if result:
@@ -369,6 +434,10 @@ Examples:
     p_start.add_argument(
         "-d", "--device",
         help="Audio device name (default: auto-detect BlackHole > Zoom > Teams)",
+    )
+    p_start.add_argument(
+        "-m", "--mic",
+        help="Microphone device for dual-input mixing (default: auto-detect Yeti > built-in)",
     )
     p_start.set_defaults(func=cmd_start)
 
