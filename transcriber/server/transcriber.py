@@ -11,7 +11,7 @@
 """
 Transcriber — FastAPI server for the Mac Mini transcription appliance.
 
-Manages audio recording via ffmpeg and transcription via whisper.cpp.
+Captures audio via VBAN (UDP) directly to WAV and transcribes via whisper.cpp.
 On completion, POSTs results to meetingnotesd.py with YAML front matter
 containing meeting start/end timestamps.
 
@@ -26,12 +26,12 @@ API:
 """
 
 import asyncio
-import json
 import logging
 import os
-import signal
-import subprocess
+import socket
+import threading
 import time
+import wave
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -49,7 +49,7 @@ WHISPER_CLI = os.getenv("WHISPER_CLI", os.path.expanduser("~/whisper.cpp/build/b
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", os.path.expanduser("~/whisper.cpp/models/ggml-large-v3.bin"))
 RECORDINGS_DIR = Path(os.getenv("RECORDINGS_DIR", os.path.expanduser("~/transcriber/recordings")))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://nuctu:9876/webhook")
-AUDIO_DEVICE = os.getenv("AUDIO_DEVICE", "BlackHole 2ch")  # macOS audio input
+VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))  # UDP port for VBAN audio packets
 HOST = os.getenv("TRANSCRIBER_HOST", "0.0.0.0")
 PORT = int(os.getenv("TRANSCRIBER_PORT", "8000"))
 
@@ -81,7 +81,7 @@ class Recording:
         self.meeting_start = datetime.now(timezone.utc)
         self.meeting_end: Optional[datetime] = None
         self.error: Optional[str] = None
-        self.ffmpeg_process: Optional[subprocess.Popen] = None
+        self.vban_capture: Optional["VBANCapture"] = None
         self.webhook_sent = False
 
     def to_dict(self) -> dict:
@@ -136,38 +136,98 @@ def _disk_free_gb() -> float:
     return (stat.f_bavail * stat.f_frsize) / (1024**3)
 
 
-def _list_audio_devices() -> str:
-    """List available macOS audio input devices via ffmpeg."""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.stderr  # ffmpeg outputs device list to stderr
-    except Exception as e:
-        return f"Error listing devices: {e}"
+class VBANCapture:
+    """Captures VBAN audio packets from the network directly to a WAV file.
 
+    Replaces the previous receiver → BlackHole → ffmpeg chain with a single
+    UDP listener that writes PCM data straight to disk.
+    """
 
-def _start_ffmpeg(audio_path: Path) -> subprocess.Popen:
-    """Start ffmpeg to record from the virtual audio device."""
-    # Record as 16-bit PCM WAV at 16kHz (whisper's native format)
-    cmd = [
-        "ffmpeg",
-        "-f", "avfoundation",
-        "-i", f":{AUDIO_DEVICE}",   # colon prefix = audio-only device
-        "-ar", "16000",              # 16kHz sample rate
-        "-ac", "1",                  # mono
-        "-c:a", "pcm_s16le",        # 16-bit PCM
-        "-y",                        # overwrite
-        str(audio_path),
+    HEADER_SIZE = 28
+    MAGIC = b"VBAN"
+    SR_TABLE = [
+        6000, 12000, 24000, 48000, 96000, 192000, 384000,
+        8000, 16000, 32000, 64000, 128000, 256000, 512000,
+        11025, 22050, 44100, 88200, 176400, 352800, 705600,
     ]
-    logger.info(f"Starting ffmpeg: {' '.join(cmd)}")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    return proc
+
+    def __init__(self, audio_path: Path, port: int = 6980):
+        self.audio_path = audio_path
+        self.port = port
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.sample_rate: Optional[int] = None
+        self.total_samples = 0
+
+    def start(self):
+        """Start capturing VBAN packets in a background thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._capture_loop, daemon=True, name="vban-capture",
+        )
+        self._thread.start()
+
+    def stop(self):
+        """Stop capturing and finalize the WAV file."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    def _capture_loop(self):
+        """Receive VBAN packets and write PCM data to WAV."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", self.port))
+        sock.settimeout(1.0)  # allow periodic stop checks
+
+        wav_file: Optional[wave.Wave_write] = None
+
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    data, addr = sock.recvfrom(2048)
+                except socket.timeout:
+                    continue
+
+                if len(data) <= self.HEADER_SIZE or data[:4] != self.MAGIC:
+                    continue
+
+                # Parse sample rate and channels from VBAN header
+                sr_index = data[4] & 0x1F
+                channels = (data[6] & 0xFF) + 1
+                pcm_data = data[self.HEADER_SIZE:]
+
+                if wav_file is None:
+                    self.sample_rate = (
+                        self.SR_TABLE[sr_index]
+                        if sr_index < len(self.SR_TABLE)
+                        else 48000
+                    )
+                    wav_file = wave.open(str(self.audio_path), "wb")
+                    wav_file.setnchannels(channels)
+                    wav_file.setsampwidth(2)  # 16-bit
+                    wav_file.setframerate(self.sample_rate)
+                    logger.info(
+                        f"VBAN capture: {self.sample_rate}Hz {channels}ch from {addr[0]}"
+                    )
+
+                wav_file.writeframes(pcm_data)
+                self.total_samples += len(pcm_data) // (2 * channels)
+
+        except Exception as e:
+            logger.error(f"VBAN capture error: {e}", exc_info=True)
+        finally:
+            if wav_file:
+                wav_file.close()
+                duration = (
+                    self.total_samples / self.sample_rate if self.sample_rate else 0
+                )
+                logger.info(
+                    f"VBAN capture saved: {duration:.1f}s, "
+                    f"{self.total_samples} samples → {self.audio_path}"
+                )
+            sock.close()
 
 
 async def _transcribe(recording: Recording) -> None:
@@ -264,7 +324,7 @@ async def status():
         "disk_free_gb": round(_disk_free_gb(), 1),
         "whisper_model": WHISPER_MODEL,
         "webhook_url": WEBHOOK_URL,
-        "audio_device": AUDIO_DEVICE,
+        "vban_port": VBAN_PORT,
         "recent_count": len(recent_recordings),
     }
 
@@ -292,12 +352,8 @@ async def start(req: StartRequest):
     recording = Recording(title=req.title, audio_path=audio_path)
 
     try:
-        recording.ffmpeg_process = _start_ffmpeg(audio_path)
-        # Give ffmpeg a moment to start
-        await asyncio.sleep(0.5)
-        if recording.ffmpeg_process.poll() is not None:
-            stderr = recording.ffmpeg_process.stderr.read().decode() if recording.ffmpeg_process.stderr else ""
-            raise RuntimeError(f"ffmpeg exited immediately: {stderr[-300:]}")
+        recording.vban_capture = VBANCapture(audio_path, port=VBAN_PORT)
+        recording.vban_capture.start()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start recording: {e}")
 
@@ -323,14 +379,9 @@ async def stop():
     recording = active_recording
     recording.meeting_end = datetime.now(timezone.utc)
 
-    # Stop ffmpeg gracefully
-    if recording.ffmpeg_process and recording.ffmpeg_process.poll() is None:
-        recording.ffmpeg_process.send_signal(signal.SIGINT)
-        try:
-            recording.ffmpeg_process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            recording.ffmpeg_process.kill()
-            recording.ffmpeg_process.wait()
+    # Stop VBAN capture and finalize WAV
+    if recording.vban_capture:
+        recording.vban_capture.stop()
 
     duration = (recording.meeting_end - recording.meeting_start).total_seconds()
     logger.info(f"Recording stopped: {recording.title} ({duration:.0f}s)")
@@ -393,7 +444,7 @@ async def startup():
     logger.info(f"  Model:        {WHISPER_MODEL}")
     logger.info(f"  Recordings:   {RECORDINGS_DIR}")
     logger.info(f"  Webhook URL:  {WEBHOOK_URL}")
-    logger.info(f"  Audio device: {AUDIO_DEVICE}")
+    logger.info(f"  VBAN port:    {VBAN_PORT}")
 
 
 if __name__ == "__main__":

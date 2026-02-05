@@ -9,10 +9,8 @@ WHISPER_DIR := ~/whisper.cpp
 WHISPER_MODEL := large-v3
 SERVICE_LABEL := com.transcriber
 PLIST := $(SERVICE_LABEL).plist
-VBAN_SERVICE_LABEL := com.vban-receiver
-VBAN_PLIST := $(VBAN_SERVICE_LABEL).plist
 
-.PHONY: check provision deploy deploy-vban logs logs-vban status ssh test model
+.PHONY: check provision deploy logs status ssh test model
 
 # ---------------------------------------------------------------------------
 # Connectivity & Status
@@ -30,11 +28,12 @@ check:
 		echo "Disk free: $$(df -h / | tail -1 | awk "{print \$$4}")"; \
 		echo "---"; \
 		echo "Homebrew:  $$(brew --version 2>/dev/null | head -1 || echo "not installed")"; \
-		echo "ffmpeg:    $$(ffmpeg -version 2>/dev/null | head -1 || echo "not installed")"; \
+		echo "ffmpeg:    $$(ffmpeg -version 2>/dev/null | head -1 || echo "not installed (optional)")"; \
 		echo "uv:        $$(uv --version 2>/dev/null || echo "not installed")"; \
 		echo "whisper:   $$(test -x $(WHISPER_DIR)/build/bin/whisper-cli && echo "compiled" || echo "not built")"; \
 		echo "model:     $$(test -f $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin && echo "$(WHISPER_MODEL) downloaded" || echo "not downloaded")"; \
 		echo "service:   $$(launchctl list 2>/dev/null | grep -q $(SERVICE_LABEL) && echo "loaded" || echo "not loaded")"; \
+		echo "vban-recv: $$(launchctl list 2>/dev/null | grep -q com.vban-receiver && echo "LOADED (obsolete!)" || echo "not loaded (good)")"; \
 		echo "---"; \
 		echo "Transcriber dir: $$(test -d $(REMOTE_DIR) && echo "exists" || echo "not deployed")"; \
 	'
@@ -79,7 +78,7 @@ provision-service:
 
 deploy:
 	@echo "=== Deploying server to pilot ==="
-	rsync -avz --delete server/ $(REMOTE_HOST):$(REMOTE_DIR)/
+	rsync -avz --delete --exclude='recordings/' server/ $(REMOTE_HOST):$(REMOTE_DIR)/
 	@echo "=== Restarting service ==="
 	@ssh $(REMOTE_HOST) '\
 		launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(PLIST) 2>/dev/null; \
@@ -107,29 +106,15 @@ test:
 	@ssh $(REMOTE_HOST) 'curl -s http://localhost:8000/status'
 
 # ---------------------------------------------------------------------------
-# VBAN Audio Streaming
+# Cleanup — remove obsolete vban-receiver service from pilot
+# (VBAN capture is now built into the transcriber directly)
 # ---------------------------------------------------------------------------
 
-deploy-vban:
-	@echo "=== Deploying VBAN receiver to pilot ==="
-	rsync -avz vban/vban_recv.py $(REMOTE_HOST):$(REMOTE_DIR)/
-	scp vban/$(VBAN_PLIST) $(REMOTE_HOST):~/Library/LaunchAgents/$(VBAN_PLIST)
-	@echo "=== Restarting VBAN receiver service ==="
+clean-vban:
+	@echo "=== Removing obsolete VBAN receiver from pilot ==="
 	@ssh $(REMOTE_HOST) '\
-		launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(VBAN_PLIST) 2>/dev/null; \
-		sleep 1; \
-		launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(VBAN_PLIST); \
-		sleep 2; \
-		launchctl list | grep -q $(VBAN_SERVICE_LABEL) && echo "VBAN receiver: running" || echo "Warning: service may not have started"; \
+		launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/com.vban-receiver.plist 2>/dev/null && echo "Service unloaded" || echo "Service not loaded"; \
+		rm -f ~/Library/LaunchAgents/com.vban-receiver.plist && echo "Plist removed"; \
+		rm -f ~/transcriber/vban_recv.py && echo "vban_recv.py removed"; \
 	'
-	@echo "=== VBAN deploy complete ==="
-
-stop-vban:
-	@echo "=== Stopping VBAN receiver ==="
-	@ssh $(REMOTE_HOST) 'launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(VBAN_PLIST) 2>/dev/null && echo "Stopped" || echo "Not running"'
-
-logs-vban:
-	@ssh $(REMOTE_HOST) 'tail -f ~/Library/Logs/vban-receiver.log 2>/dev/null || echo "No log file found"'
-
-status-vban:
-	@ssh $(REMOTE_HOST) 'launchctl list | grep $(VBAN_SERVICE_LABEL) && echo "VBAN receiver: running" || echo "VBAN receiver: not running"'
+	@echo "=== Cleanup complete ==="

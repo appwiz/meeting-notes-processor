@@ -26,7 +26,6 @@ Usage:
 Prerequisites:
   - BlackHole 2ch installed on laptop
   - SoundSource routing Zoom/Teams output → BlackHole 2ch
-  - VBAN receiver running on pilot (make deploy-vban)
   - Transcriber running on pilot (make deploy)
 """
 
@@ -59,13 +58,8 @@ DEVICE_PREFERENCE = [
     "Microsoft Teams",     # Fallback: Teams remote participants only
 ]
 
-# Microphone preference order for dual-input mixing (when using BlackHole)
-MIC_PREFERENCE = [
-    "Yeti",                # Blue Yeti USB mic
-    "MacBook Air Mic",     # Built-in laptop mic
-    "MacBook Pro Mic",     # Built-in laptop mic
-    "Built-in Micro",      # Generic built-in mic
-]
+# Microphone: use system default input device for dual-input mixing
+# (when using BlackHole as primary, we need a real mic for the user's voice)
 
 VBAN_SEND_SCRIPT = Path(__file__).parent / "vban" / "vban_send.py"
 PID_FILE = Path(os.getenv("MEETING_PID_FILE", "/tmp/meeting-vban-sender.pid"))
@@ -110,28 +104,31 @@ def find_best_device() -> tuple[str, str]:
 
 
 def find_mic_device() -> str | None:
-    """Find the best available microphone for dual-input mixing.
+    """Find the microphone for dual-input mixing.
 
-    Searches MIC_PREFERENCE order, skipping BlackHole, Zoom, and Teams
-    virtual devices (those aren't real mics).
+    Uses the system default input device, unless it's a virtual device
+    (BlackHole, Zoom, Teams) — in which case, fall back to any real mic.
     """
     devices = sd.query_devices()
-    available = []
+    default_idx = sd.default.device[0]  # system default input device
+
+    # Check if the system default is a real mic (not a virtual device)
+    if default_idx is not None and default_idx >= 0:
+        default_dev = devices[default_idx]
+        name = default_dev["name"].lower()
+        if default_dev["max_input_channels"] > 0 and not any(
+            skip in name for skip in ["blackhole", "zoom", "teams"]
+        ):
+            return default_dev["name"]
+
+    # System default is virtual — find any real mic
     for d in devices:
         if d["max_input_channels"] > 0:
             name = d["name"].lower()
-            # Skip virtual audio devices — we want a real microphone
-            if any(skip in name for skip in ["blackhole", "zoom", "teams"]):
-                continue
-            available.append(d["name"])
+            if not any(skip in name for skip in ["blackhole", "zoom", "teams"]):
+                return d["name"]
 
-    for pref in MIC_PREFERENCE:
-        for name in available:
-            if pref.lower() in name.lower():
-                return name
-
-    # Fall back to any non-virtual input device
-    return available[0] if available else None
+    return None
 
 
 def list_devices():

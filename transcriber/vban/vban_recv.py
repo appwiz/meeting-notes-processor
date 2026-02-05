@@ -170,9 +170,10 @@ def run_receiver(
         device_idx = device
 
     dev_info = sd.query_devices(device_idx)
-    logger.info(f"Output device: [{device_idx}] {dev_info['name']}")
+    output_channels = dev_info["max_output_channels"]
+    logger.info(f"Output device: [{device_idx}] {dev_info['name']} ({output_channels}ch native)")
     logger.info(f"Listening on UDP port {listen_port} for stream '{stream_name}'")
-    logger.info(f"Format: {sample_rate}Hz, {channels}ch, int16")
+    logger.info(f"Format: {sample_rate}Hz, VBAN mono → {output_channels}ch output")
 
     # Audio buffer (thread-safe deque of numpy arrays)
     audio_buffer: deque[np.ndarray] = deque(maxlen=1000)
@@ -192,7 +193,7 @@ def run_receiver(
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Audio output callback — pulls from buffer
+    # Audio output callback — pulls mono buffer data and expands to device channels
     def audio_callback(outdata, frames, time_info, status):
         nonlocal buffer_frames, receiving
         if status:
@@ -204,12 +205,19 @@ def run_receiver(
                 chunk = audio_buffer[0]
                 needed = frames - filled
                 if len(chunk) <= needed:
-                    outdata[filled : filled + len(chunk)] = chunk.reshape(-1, channels)
+                    # chunk is 1D mono — reshape to (N,1) then broadcast to all channels
+                    mono_col = chunk.reshape(-1, 1)
+                    outdata[filled : filled + len(chunk)] = np.broadcast_to(
+                        mono_col, (len(chunk), output_channels)
+                    )
                     filled += len(chunk)
                     audio_buffer.popleft()
                     buffer_frames -= len(chunk)
                 else:
-                    outdata[filled : filled + needed] = chunk[:needed].reshape(-1, channels)
+                    mono_col = chunk[:needed].reshape(-1, 1)
+                    outdata[filled : filled + needed] = np.broadcast_to(
+                        mono_col, (needed, output_channels)
+                    )
                     audio_buffer[0] = chunk[needed:]
                     buffer_frames -= needed
                     filled = frames
@@ -218,11 +226,11 @@ def run_receiver(
         if filled < frames:
             outdata[filled:] = 0
 
-    # Start audio output stream
+    # Start audio output stream — use device's native channel count
     output_stream = sd.OutputStream(
         device=device_idx,
         samplerate=sample_rate,
-        channels=channels,
+        channels=output_channels,
         dtype="float32",
         blocksize=256,
         callback=audio_callback,

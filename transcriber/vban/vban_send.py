@@ -130,6 +130,24 @@ def build_header(
 
 
 # ---------------------------------------------------------------------------
+# Audio Helpers
+# ---------------------------------------------------------------------------
+
+
+def to_mono(data: np.ndarray) -> np.ndarray:
+    """Downmix audio to mono. Input shape: (frames,) or (frames, channels).
+
+    Returns shape (frames, 1) suitable for VBAN packetization.
+    """
+    if data.ndim == 1:
+        return data.reshape(-1, 1)
+    if data.shape[1] == 1:
+        return data
+    # Average all channels to mono
+    return data.mean(axis=1, keepdims=True)
+
+
+# ---------------------------------------------------------------------------
 # Device Helpers
 # ---------------------------------------------------------------------------
 
@@ -188,9 +206,10 @@ def run_sender(
         device_idx = device
 
     dev_info = sd.query_devices(device_idx)
-    logger.info(f"Audio device: [{device_idx}] {dev_info['name']}")
+    device_channels = dev_info["max_input_channels"]
+    logger.info(f"Audio device: [{device_idx}] {dev_info['name']} ({device_channels}ch native)")
     logger.info(f"Target: {target_host}:{target_port} stream={stream_name}")
-    logger.info(f"Format: {sample_rate}Hz, {channels}ch, int16, {SAMPLES_PER_PACKET} samples/pkt")
+    logger.info(f"Format: {sample_rate}Hz, mono out, int16, {SAMPLES_PER_PACKET} samples/pkt")
 
     # Resolve target IP
     target_ip = socket.gethostbyname(target_host)
@@ -218,8 +237,11 @@ def run_sender(
         if not running:
             raise sd.CallbackAbort
 
+        # Downmix to mono regardless of device channel count
+        mono = to_mono(indata)
+
         # Convert float32 → int16
-        pcm = (indata * 32767).astype(np.int16)
+        pcm = (mono * 32767).astype(np.int16)
 
         # Send in chunks of SAMPLES_PER_PACKET
         offset = 0
@@ -228,7 +250,7 @@ def run_sender(
             actual_samples = len(chunk)
 
             header = build_header(
-                sr_idx, actual_samples, channels, frame_counter, stream_name
+                sr_idx, actual_samples, 1, frame_counter, stream_name
             )
             packet = header + chunk.tobytes()
 
@@ -241,12 +263,12 @@ def run_sender(
 
             offset += SAMPLES_PER_PACKET
 
-    # Start audio capture
+    # Start audio capture — use device's native channel count, downmix in callback
     try:
         with sd.InputStream(
             device=device_idx,
             samplerate=sample_rate,
-            channels=channels,
+            channels=device_channels,
             dtype="float32",
             blocksize=SAMPLES_PER_PACKET,
             callback=audio_callback,
@@ -310,12 +332,14 @@ def run_sender_mixed(
 
     primary_info = sd.query_devices(primary_idx)
     mic_info = sd.query_devices(mic_idx)
+    primary_channels = primary_info["max_input_channels"]
+    mic_channels = mic_info["max_input_channels"]
 
-    logger.info(f"Primary device: [{primary_idx}] {primary_info['name']}")
-    logger.info(f"Mic device:     [{mic_idx}] {mic_info['name']}")
+    logger.info(f"Primary device: [{primary_idx}] {primary_info['name']} ({primary_channels}ch native)")
+    logger.info(f"Mic device:     [{mic_idx}] {mic_info['name']} ({mic_channels}ch native)")
     logger.info(f"Target: {target_host}:{target_port} stream={stream_name}")
     logger.info(
-        f"Format: {sample_rate}Hz, {channels}ch, int16, "
+        f"Format: {sample_rate}Hz, mono out, int16, "
         f"{SAMPLES_PER_PACKET} samples/pkt, mic_gain={mic_gain}"
     )
 
@@ -349,7 +373,8 @@ def run_sender_mixed(
         if not running:
             raise sd.CallbackAbort
         try:
-            primary_q.put_nowait(indata.copy())
+            # Downmix to mono immediately in the callback
+            primary_q.put_nowait(to_mono(indata))
         except queue.Full:
             pass  # drop oldest data rather than blocking the audio thread
 
@@ -359,7 +384,8 @@ def run_sender_mixed(
         if not running:
             raise sd.CallbackAbort
         try:
-            mic_q.put_nowait(indata.copy())
+            # Downmix to mono immediately in the callback
+            mic_q.put_nowait(to_mono(indata))
         except queue.Full:
             pass
 
@@ -380,15 +406,14 @@ def run_sender_mixed(
             except queue.Empty:
                 mic_data = np.zeros_like(primary_data)
 
-            # Ensure same length (trim or pad mic to match primary)
-            if len(mic_data) < len(primary_data):
-                pad = np.zeros(
-                    (len(primary_data) - len(mic_data), mic_data.shape[1]),
-                    dtype=mic_data.dtype,
-                )
-                mic_data = np.concatenate([mic_data, pad])
-            elif len(mic_data) > len(primary_data):
-                mic_data = mic_data[: len(primary_data)]
+            # Both are mono (frames, 1) after downmix in callbacks.
+            # Ensure same frame count (trim or pad mic to match primary)
+            plen = len(primary_data)
+            mlen = len(mic_data)
+            if mlen < plen:
+                mic_data = np.pad(mic_data, ((0, plen - mlen), (0, 0)))
+            elif mlen > plen:
+                mic_data = mic_data[:plen]
 
             # Mix: sum both streams, apply mic gain, clip to [-1, 1]
             mixed = primary_data + (mic_data * mic_gain)
@@ -404,7 +429,7 @@ def run_sender_mixed(
                 actual_samples = len(chunk)
 
                 header = build_header(
-                    sr_idx, actual_samples, channels, frame_counter, stream_name
+                    sr_idx, actual_samples, 1, frame_counter, stream_name
                 )
                 packet = header + chunk.tobytes()
 
@@ -420,18 +445,19 @@ def run_sender_mixed(
     # Start the mixer in a background thread
     mixer = threading.Thread(target=mixer_thread, daemon=True)
 
+    # Open each device with its native channel count — downmix happens in callbacks
     try:
         with sd.InputStream(
             device=primary_idx,
             samplerate=sample_rate,
-            channels=channels,
+            channels=primary_channels,
             dtype="float32",
             blocksize=SAMPLES_PER_PACKET,
             callback=primary_callback,
         ), sd.InputStream(
             device=mic_idx,
             samplerate=sample_rate,
-            channels=channels,
+            channels=mic_channels,
             dtype="float32",
             blocksize=SAMPLES_PER_PACKET,
             callback=mic_callback,
