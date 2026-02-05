@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = [
+#     "pyyaml>=6.0",
+# ]
 # ///
 """
 Meeting Notes Processor
@@ -179,6 +181,95 @@ def get_date_from_file(filepath):
     # Fall back to file modification time
     timestamp = os.path.getmtime(filepath)
     return datetime.fromtimestamp(timestamp).strftime('%Y%m%d')
+
+def parse_transcript_header(filepath: str) -> dict:
+    """Extract YAML front matter from transcript if present.
+    
+    Expected format:
+        ---
+        meeting_start: 2026-01-27T14:00:00-08:00
+        meeting_end: 2026-01-27T15:03:00-08:00
+        recording_source: transcriber
+        ---
+        
+        [Transcript content follows...]
+    
+    Returns a dict of parsed fields, or empty dict if no header present.
+    """
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    if not content.startswith('---'):
+        return {}
+    
+    # Find closing ---
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return {}
+    
+    yaml_text = content[3:3 + end_match.start()]
+    try:
+        import yaml
+        metadata = yaml.safe_load(yaml_text) or {}
+        # Normalize datetime strings — ensure they're strings for downstream parsing
+        for key in ('meeting_start', 'meeting_end'):
+            if key in metadata and not isinstance(metadata[key], str):
+                metadata[key] = metadata[key].isoformat()
+        return metadata
+    except Exception:
+        return {}
+
+
+def get_transcript_body(filepath: str) -> str:
+    """Return the transcript text with YAML front matter stripped, if present."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    if not content.startswith('---'):
+        return content
+    
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return content
+    
+    # Return everything after the closing ---
+    return content[3 + end_match.end():]
+
+
+def time_overlaps(calendar_entry: dict, meeting_start: datetime, meeting_end: datetime) -> bool:
+    """Check if a calendar entry's time window overlaps with the meeting window.
+    
+    Calendar entries have 'start_time' and 'end_time' as HH:MM strings (or None for all-day).
+    Meeting start/end are full datetime objects. We compare only the time-of-day portion.
+    
+    All-day events always overlap. Provides 5-minute tolerance on boundaries.
+    """
+    if not calendar_entry.get('start_time') or not calendar_entry.get('end_time'):
+        return True  # All-day events always match
+    
+    # Parse calendar times as hours/minutes on the meeting date
+    try:
+        cal_start_parts = calendar_entry['start_time'].split(':')
+        cal_end_parts = calendar_entry['end_time'].split(':')
+        
+        cal_start = meeting_start.replace(
+            hour=int(cal_start_parts[0]), minute=int(cal_start_parts[1]),
+            second=0, microsecond=0)
+        cal_end = meeting_start.replace(
+            hour=int(cal_end_parts[0]), minute=int(cal_end_parts[1]),
+            second=0, microsecond=0)
+    except (ValueError, IndexError):
+        return True  # Can't parse times, don't filter
+    
+    # Apply 5-minute tolerance — meetings often run over or start slightly late
+    from datetime import timedelta
+    tolerance = timedelta(minutes=5)
+    cal_start_tolerant = cal_start - tolerance
+    cal_end_tolerant = cal_end + tolerance
+    
+    # Check overlap: two intervals overlap if start1 < end2 and start2 < end1
+    return meeting_start < cal_end_tolerant and cal_start_tolerant < meeting_end
+
 
 def ensure_unique_filename(directory, base_name, extension):
     """Ensure filename is unique by appending counter if necessary."""
@@ -584,8 +675,26 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     
     workspace_dir = paths['workspace']
     
-    # Get date from file for naming and calendar lookup
-    date_str = get_date_from_file(input_file)
+    # Parse transcript header for timing metadata
+    metadata = parse_transcript_header(input_file)
+    
+    # Get date from header timestamps, falling back to filename/mtime
+    meeting_start = None
+    meeting_end = None
+    if metadata.get('meeting_start'):
+        try:
+            meeting_start = datetime.fromisoformat(metadata['meeting_start'])
+            date_str = meeting_start.strftime('%Y%m%d')
+            if metadata.get('meeting_end'):
+                meeting_end = datetime.fromisoformat(metadata['meeting_end'])
+            print(f"  Metadata: {metadata.get('recording_source', 'unknown')} recording, "
+                  f"{meeting_start.strftime('%H:%M')}"
+                  f"{'-' + meeting_end.strftime('%H:%M') if meeting_end else ''}")
+        except (ValueError, TypeError):
+            date_str = get_date_from_file(input_file)
+    else:
+        date_str = get_date_from_file(input_file)
+    
     meeting_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"  # YYYY-MM-DD format
     temp_org_filename = f"temp-{date_str}.org"
     
@@ -601,11 +710,36 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
         calendar_entries = parse_calendar_org(calendar_path)
         day_entries = [e for e in calendar_entries if e['date'] == meeting_date]
         
+        # If we have precise timestamps, filter by time overlap for deterministic matching
+        if day_entries and meeting_start and meeting_end:
+            time_filtered = [e for e in day_entries
+                             if time_overlaps(e, meeting_start, meeting_end)]
+            if time_filtered:
+                print(f"  Calendar: Narrowed {len(day_entries)} entries to {len(time_filtered)} by time overlap")
+                day_entries = time_filtered
+            else:
+                print(f"  Calendar: No time overlap matches, keeping all {len(day_entries)} entries for date")
+        
         if day_entries:
             print(f"  Calendar: Found {len(day_entries)} entries for {meeting_date}")
             calendar_text = format_calendar_for_prompt(day_entries, meeting_date)
             # Gather recent notes context to help with disambiguation
             notes_context = gather_recent_notes_context(paths['notes'])
+            
+            # Add time context from transcript metadata if available
+            if meeting_start:
+                time_hint = f"\n## MEETING TIME FROM TRANSCRIPT\n"
+                time_hint += f"The recording started at {meeting_start.strftime('%H:%M')}"
+                if meeting_end:
+                    time_hint += f" and ended at {meeting_end.strftime('%H:%M')}"
+                    duration_mins = int((meeting_end - meeting_start).total_seconds() / 60)
+                    time_hint += f" (duration: {duration_mins} minutes)"
+                time_hint += ".\n"
+                time_hint += "This STRONGLY constrains which calendar entry matches:\n"
+                time_hint += "- Prefer entries whose time slot contains or overlaps this window\n"
+                time_hint += f"- A {meeting_start.strftime('%H:%M')}-{meeting_end.strftime('%H:%M') if meeting_end else '??:??'} recording almost certainly matches a calendar slot at that time\n"
+                calendar_text = time_hint + "\n" + calendar_text
+            
             final_prompt = build_calendar_aware_prompt(final_prompt, calendar_text, meeting_date, notes_context)
         else:
             print(f"  Calendar: No entries for {meeting_date}")

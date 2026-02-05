@@ -19,6 +19,7 @@ Run with: uv run pytest tests/test_run_summarization.py -v
 import os
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -473,6 +474,178 @@ class TestBuildCalendarAwarePrompt:
         )
         
         assert 'Past meeting with Joe discussed project updates' in result
+
+
+class TestParseTranscriptHeader:
+    """Tests for parse_transcript_header() function."""
+
+    def test_returns_empty_dict_when_no_header(self):
+        """Should return {} for transcripts without YAML front matter."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("Just a regular transcript.\nNo header here.")
+            f.flush()
+            try:
+                result = run_summarization.parse_transcript_header(f.name)
+                assert result == {}
+            finally:
+                os.unlink(f.name)
+
+    def test_parses_full_header(self):
+        """Should parse a complete YAML front matter header."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("---\nmeeting_start: 2026-02-05T14:00:00-08:00\n"
+                    "meeting_end: 2026-02-05T15:03:00-08:00\n"
+                    "recording_source: transcriber\n---\n\nHello world transcript")
+            f.flush()
+            try:
+                result = run_summarization.parse_transcript_header(f.name)
+                assert 'meeting_start' in result
+                assert 'meeting_end' in result
+                assert result['recording_source'] == 'transcriber'
+                assert isinstance(result['meeting_start'], str)
+                assert isinstance(result['meeting_end'], str)
+            finally:
+                os.unlink(f.name)
+
+    def test_parses_partial_header(self):
+        """Should parse header with only some fields."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("---\nrecording_source: macwhisper\n---\n\nTranscript text")
+            f.flush()
+            try:
+                result = run_summarization.parse_transcript_header(f.name)
+                assert result['recording_source'] == 'macwhisper'
+                assert 'meeting_start' not in result
+            finally:
+                os.unlink(f.name)
+
+    def test_returns_empty_on_malformed_yaml(self):
+        """Should return {} if YAML is malformed."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("---\n: : : bad yaml [[\n---\n\nTranscript")
+            f.flush()
+            try:
+                result = run_summarization.parse_transcript_header(f.name)
+                assert result == {}
+            finally:
+                os.unlink(f.name)
+
+    def test_returns_empty_when_no_closing_delimiter(self):
+        """Should return {} if closing --- is missing."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("---\nmeeting_start: 2026-02-05T14:00:00\nno closing delimiter here")
+            f.flush()
+            try:
+                result = run_summarization.parse_transcript_header(f.name)
+                assert result == {}
+            finally:
+                os.unlink(f.name)
+
+    def test_normalizes_datetime_objects_to_strings(self):
+        """YAML may parse ISO timestamps as datetime objects; should normalize to strings."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("---\nmeeting_start: 2026-02-05 14:00:00\n"
+                    "meeting_end: 2026-02-05 15:03:00\n---\n\nText")
+            f.flush()
+            try:
+                result = run_summarization.parse_transcript_header(f.name)
+                assert isinstance(result['meeting_start'], str)
+                assert isinstance(result['meeting_end'], str)
+            finally:
+                os.unlink(f.name)
+
+
+class TestGetTranscriptBody:
+    """Tests for get_transcript_body() function."""
+
+    def test_returns_full_content_without_header(self):
+        """Should return full content for files without YAML front matter."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("Just transcript text.\nSecond line.")
+            f.flush()
+            try:
+                result = run_summarization.get_transcript_body(f.name)
+                assert result == "Just transcript text.\nSecond line."
+            finally:
+                os.unlink(f.name)
+
+    def test_strips_header_and_returns_body(self):
+        """Should strip YAML front matter and return only the transcript body."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write("---\nmeeting_start: 2026-02-05T14:00:00\n---\n\nThe actual transcript.")
+            f.flush()
+            try:
+                result = run_summarization.get_transcript_body(f.name)
+                assert result == "The actual transcript."
+                assert '---' not in result
+                assert 'meeting_start' not in result
+            finally:
+                os.unlink(f.name)
+
+    def test_returns_full_content_when_no_closing_delimiter(self):
+        """Should return full content if closing --- is missing."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            content = "---\nmeeting_start: 2026-02-05T14:00:00\nJust continues"
+            f.write(content)
+            f.flush()
+            try:
+                result = run_summarization.get_transcript_body(f.name)
+                assert result == content
+            finally:
+                os.unlink(f.name)
+
+
+class TestTimeOverlaps:
+    """Tests for time_overlaps() function."""
+
+    def test_overlapping_entries(self):
+        """Calendar 14:00-15:00 should overlap with meeting 14:00-15:03."""
+        cal = {'start_time': '14:00', 'end_time': '15:00'}
+        start = datetime(2026, 2, 5, 14, 0)
+        end = datetime(2026, 2, 5, 15, 3)
+        assert run_summarization.time_overlaps(cal, start, end) is True
+
+    def test_non_overlapping_entries(self):
+        """Calendar 09:00-10:00 should not overlap with meeting 14:00-15:00."""
+        cal = {'start_time': '09:00', 'end_time': '10:00'}
+        start = datetime(2026, 2, 5, 14, 0)
+        end = datetime(2026, 2, 5, 15, 0)
+        assert run_summarization.time_overlaps(cal, start, end) is False
+
+    def test_all_day_events_always_match(self):
+        """All-day events (no start/end time) should always overlap."""
+        cal = {'start_time': None, 'end_time': None}
+        start = datetime(2026, 2, 5, 14, 0)
+        end = datetime(2026, 2, 5, 15, 0)
+        assert run_summarization.time_overlaps(cal, start, end) is True
+
+    def test_tolerance_on_boundaries(self):
+        """Should match within 5-minute tolerance."""
+        cal = {'start_time': '15:00', 'end_time': '16:00'}
+        start = datetime(2026, 2, 5, 14, 0)
+        end = datetime(2026, 2, 5, 14, 57)
+        assert run_summarization.time_overlaps(cal, start, end) is True
+
+    def test_no_tolerance_for_far_apart(self):
+        """Should not match when times are more than 5 min apart."""
+        cal = {'start_time': '15:00', 'end_time': '16:00'}
+        start = datetime(2026, 2, 5, 13, 0)
+        end = datetime(2026, 2, 5, 14, 50)
+        assert run_summarization.time_overlaps(cal, start, end) is False
+
+    def test_meeting_contained_within_calendar(self):
+        """Meeting fully inside calendar slot should overlap."""
+        cal = {'start_time': '13:00', 'end_time': '15:00'}
+        start = datetime(2026, 2, 5, 13, 30)
+        end = datetime(2026, 2, 5, 14, 30)
+        assert run_summarization.time_overlaps(cal, start, end) is True
+
+    def test_calendar_contained_within_meeting(self):
+        """Calendar slot fully inside meeting window should overlap."""
+        cal = {'start_time': '14:00', 'end_time': '14:30'}
+        start = datetime(2026, 2, 5, 13, 0)
+        end = datetime(2026, 2, 5, 16, 0)
+        assert run_summarization.time_overlaps(cal, start, end) is True
 
 
 if __name__ == "__main__":
