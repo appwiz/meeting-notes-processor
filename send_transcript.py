@@ -41,10 +41,23 @@ def send_to_webhook(filepath, webhook_url="http://localhost:9876/webhook"):
         print(f"Error reading file: {e}")
         return False
     
-    # Extract title from first line or use filename
+    # Extract title: skip YAML front matter if present, use first content line
     lines = transcript.strip().split('\n')
     if lines:
-        title = lines[0].strip()
+        title_line = 0
+        # Skip YAML front matter (--- ... ---)
+        if lines[0].strip() == '---':
+            for i, line in enumerate(lines[1:], 1):
+                if line.strip() == '---':
+                    title_line = i + 1
+                    break
+        # Find first non-empty line after any front matter
+        while title_line < len(lines) and not lines[title_line].strip():
+            title_line += 1
+        if title_line < len(lines):
+            title = lines[title_line].strip()
+        else:
+            title = os.path.splitext(os.path.basename(filepath))[0]
     else:
         title = os.path.basename(filepath)
     
