@@ -9,8 +9,10 @@ WHISPER_DIR := ~/whisper.cpp
 WHISPER_MODEL := large-v3
 SERVICE_LABEL := com.transcriber
 PLIST := $(SERVICE_LABEL).plist
+VBAN_SERVICE_LABEL := com.vban-receiver
+VBAN_PLIST := $(VBAN_SERVICE_LABEL).plist
 
-.PHONY: check provision deploy logs status ssh test model
+.PHONY: check provision deploy deploy-vban logs logs-vban status ssh test model
 
 # ---------------------------------------------------------------------------
 # Connectivity & Status
@@ -103,3 +105,31 @@ model:
 test:
 	@echo "=== Running round-trip test ==="
 	@ssh $(REMOTE_HOST) 'curl -s http://localhost:8000/status'
+
+# ---------------------------------------------------------------------------
+# VBAN Audio Streaming
+# ---------------------------------------------------------------------------
+
+deploy-vban:
+	@echo "=== Deploying VBAN receiver to pilot ==="
+	rsync -avz vban/vban_recv.py $(REMOTE_HOST):$(REMOTE_DIR)/
+	scp vban/$(VBAN_PLIST) $(REMOTE_HOST):~/Library/LaunchAgents/$(VBAN_PLIST)
+	@echo "=== Restarting VBAN receiver service ==="
+	@ssh $(REMOTE_HOST) '\
+		launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(VBAN_PLIST) 2>/dev/null; \
+		sleep 1; \
+		launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(VBAN_PLIST); \
+		sleep 2; \
+		launchctl list | grep -q $(VBAN_SERVICE_LABEL) && echo "VBAN receiver: running" || echo "Warning: service may not have started"; \
+	'
+	@echo "=== VBAN deploy complete ==="
+
+stop-vban:
+	@echo "=== Stopping VBAN receiver ==="
+	@ssh $(REMOTE_HOST) 'launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(VBAN_PLIST) 2>/dev/null && echo "Stopped" || echo "Not running"'
+
+logs-vban:
+	@ssh $(REMOTE_HOST) 'tail -f ~/Library/Logs/vban-receiver.log 2>/dev/null || echo "No log file found"'
+
+status-vban:
+	@ssh $(REMOTE_HOST) 'launchctl list | grep $(VBAN_SERVICE_LABEL) && echo "VBAN receiver: running" || echo "VBAN receiver: not running"'

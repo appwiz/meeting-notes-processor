@@ -1,7 +1,7 @@
 # Transcription Workflow Optimization Plan
 
 **Date:** January 27, 2026 (updated February 5, 2026)  
-**Status:** Active — Phase 1 (Timing Metadata) in progress; Transcriber appliance design finalized
+**Status:** Active — Phases 1-2 complete; Phase 3 (audio routing) in progress. VBAN streaming verified end-to-end.
 
 ## Problem Statement
 
@@ -135,22 +135,25 @@ Offload recording and transcription entirely to a dedicated **M1 Mac Mini** conn
 
 ### Implementation Phases
 
-**Phase A: Appliance Setup (Mac Mini)**
-- [ ] Install Homebrew, Python 3.11+, FFmpeg
-- [ ] Compile whisper.cpp with CoreML: `WHISPER_COREML=1 make -j`
-- [ ] Generate CoreML model: `./models/generate-coreml-model.sh large-v3`
-- [ ] Install BlackHole 2ch as virtual audio bridge for VBAN → FFmpeg
-- [ ] Build FastAPI server with `/start`, `/stop`, `/status` endpoints
-- [ ] Background task queue for non-blocking transcription
+**Phase A: Appliance Setup (Mac Mini)** ✅
+- [x] Install Homebrew, Python 3.11+, FFmpeg, uv
+- [x] Compile whisper.cpp with Metal acceleration (large-v3 model, 2.9GB)
+- [x] Install BlackHole 2ch as virtual audio bridge for VBAN → FFmpeg
+- [x] Build FastAPI server with `/start`, `/stop`, `/status`, `/recordings` endpoints
+- [x] Background task queue for non-blocking transcription
+- [x] launchd service for auto-start (com.transcriber)
 
-**Phase B: Audio Routing (Laptop)**
-- [ ] Configure SoundSource Output Group: primary output + VBAN stream
-- [ ] Set Zoom and Teams to use the Output Group
-- [ ] Verify audio arrives cleanly on Mini over Tailscale
+**Phase B: Audio Routing (Laptop)** — IN PROGRESS
+- [x] VBAN sender/receiver implemented in Python (sounddevice + numpy)
+- [x] VBAN receiver deployed as launchd service on pilot (com.vban-receiver)
+- [x] Audio verified arriving on pilot over Tailscale (100.120.243.128 → 100.111.132.123)
+- [ ] Configure SoundSource to route Zoom/Teams audio to VBAN sender
+- [ ] Test with actual Zoom/Teams meeting audio
 
 **Phase C: Call Detection & Automation (Laptop)**
 - [ ] Build background daemon that monitors for Zoom/Teams meeting windows
 - [ ] Auto-trigger `/start` on meeting detection, `/stop` on meeting end
+- [ ] Auto-start VBAN sender when meeting detected, stop when meeting ends
 - [ ] Menu bar indicator for recording status
 - [ ] Manual override (start/stop keyboard shortcut)
 
@@ -205,28 +208,32 @@ The LLM + calendar context identifies WHO is speaking at each turn. Full pyannot
 
 ## Recommended Phased Approach
 
-### Phase 1: Timing Metadata in Processor (Priority — This Week)
+### Phase 1: Timing Metadata in Processor ✅ COMPLETE
 Make the processing pipeline timestamp-aware. This is prerequisite for everything else and delivers value immediately (even with MacWhisper, we can inject receipt-time estimates).
 
-- [ ] Add YAML front matter support to `meetingnotesd.py` webhook handler
-- [ ] Add `parse_transcript_header()` to `run_summarization.py`
-- [ ] Update calendar matching to use time overlap when timestamps available
-- [ ] Re-add time context to `build_calendar_aware_prompt()` (with real timestamps, not mtime heuristics)
-- [ ] Add `pyyaml` to inline script dependencies
-- [ ] Tests for header parsing and time-based calendar filtering
+- [x] Add YAML front matter support to `meetingnotesd.py` webhook handler (commit 056c286)
+- [x] Add `parse_transcript_header()` to `run_summarization.py` (commit 098f091)
+- [x] Update calendar matching to use time overlap when timestamps available
+- [x] Re-add time context to `build_calendar_aware_prompt()` (with real timestamps, not mtime heuristics)
+- [x] Add `pyyaml` to inline script dependencies
+- [x] Tests for header parsing and time-based calendar filtering (46 + 28 = 74 tests total)
 
-### Phase 2: Build the Transcriber Appliance
+### Phase 2: Build the Transcriber Appliance ✅ COMPLETE
 Set up the M1 Mac Mini as a dedicated transcription server.
 
-- [ ] Appliance setup: whisper.cpp + CoreML compilation
-- [ ] FastAPI server with `/start`, `/stop`, `/status` endpoints
-- [ ] ffmpeg VBAN capture pipeline
-- [ ] Transcript delivery with YAML front matter to meetingnotesd.py
+- [x] Appliance setup: whisper.cpp compiled with Metal, large-v3 model (commit 62a7d2a)
+- [x] FastAPI server with `/start`, `/stop`, `/status`, `/recordings` endpoints
+- [x] ffmpeg recording from BlackHole 2ch virtual audio device
+- [x] Transcript delivery with YAML front matter to meetingnotesd.py
+- [x] launchd service (`com.transcriber`) auto-starts on boot
 
-### Phase 3: Laptop Audio Routing & Call Detection
+### Phase 3: Laptop Audio Routing & Call Detection — IN PROGRESS
 Automate the laptop side.
 
-- [ ] SoundSource per-app audio routing to VBAN
+- [x] VBAN audio streaming: `vban_send.py` (laptop) → `vban_recv.py` (pilot → BlackHole 2ch)
+- [x] VBAN receiver runs as launchd service (`com.vban-receiver`) on pilot
+- [x] End-to-end verified: laptop mic → VBAN → pilot → ffmpeg → whisper → webhook
+- [ ] SoundSource per-app audio routing (Zoom/Teams → VBAN sender)
 - [ ] Call detection daemon (Zoom/Teams process monitoring)
 - [ ] Menu bar UI with recording status and manual controls
 - [ ] Auto-trigger `/start` and `/stop` on the Mini
@@ -256,16 +263,18 @@ All Transcriber appliance code lives in this repo under `transcriber/`. The Mac 
 ```
 transcriber/
 ├── Makefile                  # All remote ops via SSH (provision, deploy, logs, etc.)
-├── README.md                 # Setup & usage docs
+├── com.transcriber.plist     # launchd service definition (auto-start on boot)
 ├── server/
-│   ├── transcriber.py        # FastAPI server with /start, /stop, /status (PEP 723 inline deps)
-│   └── transcribe.sh         # whisper.cpp wrapper: run model, emit YAML front matter
+│   └── transcriber.py        # FastAPI server with /start, /stop, /status (PEP 723 inline deps)
 ├── setup/
 │   ├── 01-homebrew.sh        # Install Homebrew (idempotent)
 │   ├── 02-dependencies.sh    # brew install ffmpeg blackhole-2ch; install uv
-│   ├── 03-whisper.sh         # Clone & compile whisper.cpp with CoreML; download large-v3 model
+│   ├── 03-whisper.sh         # Clone & compile whisper.cpp with Metal; download large-v3 model
 │   └── 04-service.sh         # Install launchd plist, start service
-└── com.transcriber.plist     # launchd service definition (auto-start on boot)
+└── vban/
+    ├── vban_send.py           # VBAN sender — runs on laptop, streams audio to pilot
+    ├── vban_recv.py           # VBAN receiver — runs on pilot, plays to BlackHole 2ch
+    └── com.vban-receiver.plist # launchd service for receiver on pilot
 ```
 
 ### Makefile Targets
@@ -277,8 +286,12 @@ All targets run from the laptop against pilot via SSH:
 | `make check` | Verify SSH connectivity, show pilot hardware/software status |
 | `make provision` | Run all `setup/*.sh` scripts in order (idempotent, safe to re-run) |
 | `make deploy` | `rsync` server code to `~/transcriber/` on pilot, restart launchd service |
+| `make deploy-vban` | Deploy VBAN receiver to pilot, install launchd service, restart |
 | `make logs` | Tail the transcriber service logs on pilot |
+| `make logs-vban` | Tail the VBAN receiver logs on pilot |
 | `make status` | Show service status + any active recordings |
+| `make status-vban` | Check if VBAN receiver is running on pilot |
+| `make stop-vban` | Stop the VBAN receiver on pilot |
 | `make ssh` | Open an interactive shell on pilot |
 | `make test` | Send a test audio clip and verify the full round-trip |
 | `make model` | Download/update the whisper.cpp model on pilot |
@@ -294,6 +307,7 @@ All targets run from the laptop against pilot via SSH:
 | **Deployment** | `rsync` + `launchctl restart` | Fast, no build step, atomic |
 | **Whisper model** | large-v3 + CoreML | Best accuracy; ~3-4x real-time is fine since transcription is async |
 | **Audio bridge** | BlackHole 2ch | Virtual audio device for VBAN → ffmpeg capture on pilot |
+| **Audio transport** | VBAN over UDP (Python) | Custom `vban_send.py` / `vban_recv.py` using `sounddevice` + `numpy`; ~256 samples/packet at 48kHz mono int16 |
 
 ### Provisioning Flow
 
@@ -340,10 +354,13 @@ The YAML front matter is embedded in the transcript body. `meetingnotesd.py` sav
 |-----------|--------------|-------------|---------|
 | FastAPI server | `transcriber/server/` | `~/transcriber/` on pilot | pilot |
 | whisper.cpp + models | compiled on pilot via setup scripts | `~/whisper.cpp/` on pilot | pilot |
+| VBAN receiver | `transcriber/vban/vban_recv.py` | `~/transcriber/` on pilot | pilot |
+| VBAN sender | `transcriber/vban/vban_send.py` | stays on laptop | laptop |
 | Setup scripts | `transcriber/setup/` | run via SSH, not deployed | pilot (via laptop) |
 | Makefile | `transcriber/Makefile` | stays on laptop | laptop |
-| launchd plist | `transcriber/com.transcriber.plist` | `~/Library/LaunchAgents/` on pilot | pilot |
-| meetingnotesd.py | repo root | already running on laptop | laptop |
+| Transcriber plist | `transcriber/com.transcriber.plist` | `~/Library/LaunchAgents/` on pilot | pilot |
+| VBAN receiver plist | `transcriber/vban/com.vban-receiver.plist` | `~/Library/LaunchAgents/` on pilot | pilot |
+| meetingnotesd.py | repo root | already running on nuctu | nuctu |
 | Call detector (Phase 3) | `transcriber/director/` (future) | laptop | laptop |
 
 ---
