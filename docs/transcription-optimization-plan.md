@@ -240,6 +240,114 @@ May not be needed — calendar context handles speaker ID well.
 
 ---
 
+## Implementation Strategy
+
+All Transcriber appliance code lives in this repo under `transcriber/`. The Mac Mini ("pilot") is provisioned and deployed to entirely from the laptop via SSH. No manual setup required on pilot itself.
+
+### Target Machine
+
+- **Hostname:** `pilot` (reachable via `ssh edd@pilot`)
+- **Hardware:** M1 Mac Mini, 8 GB RAM, arm64
+- **OS:** macOS 26.2
+- **Current state:** Minimal — no Homebrew, no ffmpeg, system Python only. Sleep already disabled.
+
+### Repo Layout
+
+```
+transcriber/
+├── Makefile                  # All remote ops via SSH (provision, deploy, logs, etc.)
+├── README.md                 # Setup & usage docs
+├── server/
+│   ├── transcriber.py        # FastAPI server with /start, /stop, /status (PEP 723 inline deps)
+│   └── transcribe.sh         # whisper.cpp wrapper: run model, emit YAML front matter
+├── setup/
+│   ├── 01-homebrew.sh        # Install Homebrew (idempotent)
+│   ├── 02-dependencies.sh    # brew install ffmpeg blackhole-2ch; install uv
+│   ├── 03-whisper.sh         # Clone & compile whisper.cpp with CoreML; download large-v3 model
+│   └── 04-service.sh         # Install launchd plist, start service
+└── com.transcriber.plist     # launchd service definition (auto-start on boot)
+```
+
+### Makefile Targets
+
+All targets run from the laptop against pilot via SSH:
+
+| Target | Description |
+|--------|-------------|
+| `make check` | Verify SSH connectivity, show pilot hardware/software status |
+| `make provision` | Run all `setup/*.sh` scripts in order (idempotent, safe to re-run) |
+| `make deploy` | `rsync` server code to `~/transcriber/` on pilot, restart launchd service |
+| `make logs` | Tail the transcriber service logs on pilot |
+| `make status` | Show service status + any active recordings |
+| `make ssh` | Open an interactive shell on pilot |
+| `make test` | Send a test audio clip and verify the full round-trip |
+| `make model` | Download/update the whisper.cpp model on pilot |
+
+### Technology Choices
+
+| Component | Choice | Rationale |
+|-----------|--------|-----------|
+| **Server** | FastAPI via `uv run` | PEP 723 inline deps, consistent with rest of project |
+| **Python** | System python3 + `uv` | Avoid Homebrew python; `uv` handles venvs transparently |
+| **Provisioning** | Numbered shell scripts over SSH | Idempotent, simple, no Ansible dependency |
+| **Service manager** | launchd plist | Native macOS, auto-start on boot, log management |
+| **Deployment** | `rsync` + `launchctl restart` | Fast, no build step, atomic |
+| **Whisper model** | large-v3 + CoreML | Best accuracy; ~3-4x real-time is fine since transcription is async |
+| **Audio bridge** | BlackHole 2ch | Virtual audio device for VBAN → ffmpeg capture on pilot |
+
+### Provisioning Flow
+
+Each script is idempotent and runs remotely via `ssh edd@pilot 'bash -s' < setup/NN-name.sh`:
+
+1. **01-homebrew.sh** — Install Homebrew if not present, update PATH
+2. **02-dependencies.sh** — `brew install ffmpeg blackhole-2ch`; install `uv` via official installer
+3. **03-whisper.sh** — Clone whisper.cpp to `~/whisper.cpp`, compile with `WHISPER_COREML=1 make -j`, download large-v3 model, generate CoreML model
+4. **04-service.sh** — Copy `com.transcriber.plist` to `~/Library/LaunchAgents/`, load and start the service
+
+### Deployment Flow
+
+```
+laptop                              pilot (Mac Mini)
+  make deploy
+    rsync transcriber/server/ ──────► ~/transcriber/
+    ssh: launchctl kickstart ───────► service restarts with new code
+    ssh: curl /status ──────────────► verify healthy
+```
+
+### Server API (transcriber.py on pilot)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/status` | GET | Health check: service status, active recordings, disk space |
+| `/start` | POST | Begin recording: spawns ffmpeg to capture VBAN audio; records `meeting_start` timestamp. Body: `{"title": "Meeting Name"}` |
+| `/stop` | POST | Stop recording: kills ffmpeg, queues audio for whisper.cpp transcription. Records `meeting_end` timestamp |
+| `/recordings` | GET | List recent recordings and their processing status |
+
+On transcription completion, the server POSTs the result to `meetingnotesd.py`:
+
+```json
+{
+  "title": "Meeting Name",
+  "transcript": "---\nmeeting_start: 2026-02-05T14:00:00-08:00\nmeeting_end: 2026-02-05T15:03:00-08:00\nrecording_source: transcriber\n---\n\n[transcript text...]"
+}
+```
+
+The YAML front matter is embedded in the transcript body. `meetingnotesd.py` saves it as-is to inbox — the processor pipeline picks up the timestamps via `parse_transcript_header()`.
+
+### What Runs Where
+
+| Component | Lives in repo | Deployed to | Runs on |
+|-----------|--------------|-------------|---------|
+| FastAPI server | `transcriber/server/` | `~/transcriber/` on pilot | pilot |
+| whisper.cpp + models | compiled on pilot via setup scripts | `~/whisper.cpp/` on pilot | pilot |
+| Setup scripts | `transcriber/setup/` | run via SSH, not deployed | pilot (via laptop) |
+| Makefile | `transcriber/Makefile` | stays on laptop | laptop |
+| launchd plist | `transcriber/com.transcriber.plist` | `~/Library/LaunchAgents/` on pilot | pilot |
+| meetingnotesd.py | repo root | already running on laptop | laptop |
+| Call detector (Phase 3) | `transcriber/director/` (future) | laptop | laptop |
+
+---
+
 ## Transcript Metadata Integration
 
 **This is the key unlock.** Once timing metadata is preserved, processing latency becomes irrelevant and deferred/batched transcription is viable.
