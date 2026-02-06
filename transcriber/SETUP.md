@@ -191,7 +191,33 @@ cd transcriber && make logs
 
 ## Part 3: Daily Usage
 
-Once setup is complete, this is all you need:
+Once setup is complete, you have two options:
+
+### Option A: Menu Bar App (Recommended)
+
+```bash
+cd transcriber
+uv run meeting_bar.py
+```
+
+This puts an icon in your menu bar:
+- **🎙** — Idle, ready for meetings
+- **🔴** — Recording in progress
+- **⚠️** — Error state
+
+Features:
+- **Auto-detection**: Automatically starts recording when Zoom or Teams meetings begin, and stops when they end
+- **Manual control**: Click Start Recording… / Stop Recording from the menu
+- **Pilot status**: Shows connection status with the transcription server
+- **Toggle auto-detect**: Disable/enable automatic meeting detection via checkbox
+
+The app detects meetings by:
+- **Zoom**: Checks for `CptHost` subprocess (only present during active meetings)
+- **Teams**: Inspects window titles for "Meeting" / "Call" patterns via macOS Quartz API
+
+**Tip**: To run on login, add `uv run meeting_bar.py` to your login items, or create a launchd plist.
+
+### Option B: Manual CLI Commands
 
 ```bash
 cd transcriber
@@ -334,7 +360,8 @@ The laptop and pilot communicate over Tailscale. Ensure both machines are on the
 
 | File | Purpose |
 |------|---------|
-| `transcriber/meeting.py` | Main user command |
+| `transcriber/meeting_bar.py` | Menu bar app (auto-detect + manual control) |
+| `transcriber/meeting.py` | CLI command interface |
 | `transcriber/vban/vban_send.py` | VBAN audio sender |
 | `transcriber/Makefile` | Server management |
 | `transcriber/server/transcriber.py` | Server code (deployed to pilot) |
@@ -342,6 +369,7 @@ The laptop and pilot communicate over Tailscale. Ensure both machines are on the
 | `transcriber/setup/` | Provisioning scripts |
 | `/tmp/meeting-vban-sender.log` | VBAN sender log |
 | `/tmp/meeting-vban-sender.pid` | VBAN sender PID file |
+| `/tmp/meeting-bar.log` | Menu bar app log |
 
 ### Pilot (Server)
 
