@@ -65,17 +65,6 @@ For the meeting timestamp just use the first timestamp in the meeting
 transcription if there is a date and time specified. If there is no date,
 use the timestamp of the input file.
 
-If the transcript contains timestamps (lines like
-"[00:01:23.000 --> 00:01:27.000] text here"), use them to help identify
-speaker turns. Pauses and temporal gaps between segments often indicate a
-change of speaker. Combined with participant names and meeting context,
-use these cues to attribute statements to the correct person where
-possible. If the transcript has no timestamps, infer speaker changes
-from conversational context as usual.
-
-Do not include timestamps or citations to the transcript anywhere in the
-output.
-
 Ensure each line is wrapped to max 80 columns, excepting headings and list items.
 
 Input file is {input_file}.

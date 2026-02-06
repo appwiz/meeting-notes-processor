@@ -28,11 +28,12 @@ API:
 import asyncio
 import logging
 import os
+import re
 import socket
 import threading
 import time
 import wave
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -46,10 +47,11 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 
 WHISPER_CLI = os.getenv("WHISPER_CLI", os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli"))
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", os.path.expanduser("~/whisper.cpp/models/ggml-large-v3.bin"))
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", os.path.expanduser("~/whisper.cpp/models/ggml-medium.en.bin"))
 RECORDINGS_DIR = Path(os.getenv("RECORDINGS_DIR", os.path.expanduser("~/transcriber/recordings")))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://nuctu:9876/webhook")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))  # UDP port for VBAN audio packets
+RECORDING_MAX_AGE_DAYS = int(os.getenv("RECORDING_MAX_AGE_DAYS", "7"))  # Delete recordings older than this
 HOST = os.getenv("TRANSCRIBER_HOST", "0.0.0.0")
 PORT = int(os.getenv("TRANSCRIBER_PORT", "8000"))
 
@@ -103,8 +105,10 @@ active_recording: Optional[Recording] = None
 recent_recordings: list[Recording] = []
 MAX_RECENT = 20
 
-# Background transcription task
-_transcription_task: Optional[asyncio.Task] = None
+# Sequential transcription queue — ensures only one whisper-cli runs at a time
+# Created lazily in startup() to bind to the correct event loop
+_transcription_queue: Optional[asyncio.Queue] = None
+_queue_worker_task: Optional[asyncio.Task] = None
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +138,44 @@ def _disk_free_gb() -> float:
     """Return free disk space in GB."""
     stat = os.statvfs(str(RECORDINGS_DIR))
     return (stat.f_bavail * stat.f_frsize) / (1024**3)
+
+
+def cleanup_old_recordings(recordings_dir: Path = None, max_age_days: int = None) -> int:
+    """Delete .wav and .txt files older than max_age_days from recordings_dir.
+
+    Returns the number of files deleted.
+    """
+    recordings_dir = recordings_dir or RECORDINGS_DIR
+    max_age_days = max_age_days if max_age_days is not None else RECORDING_MAX_AGE_DAYS
+    cutoff = time.time() - (max_age_days * 86400)
+    deleted = 0
+
+    if not recordings_dir.exists():
+        return 0
+
+    for f in recordings_dir.iterdir():
+        if f.is_file() and f.suffix in (".wav", ".txt"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    logger.info(f"Cleaned up old recording: {f.name}")
+                    deleted += 1
+            except OSError as e:
+                logger.warning(f"Failed to delete {f.name}: {e}")
+
+    if deleted:
+        logger.info(f"Cleanup: removed {deleted} file(s) older than {max_age_days} days")
+    return deleted
+
+
+async def _cleanup_loop() -> None:
+    """Periodically clean up old recordings (runs every 6 hours)."""
+    while True:
+        await asyncio.sleep(6 * 3600)  # 6 hours
+        try:
+            cleanup_old_recordings()
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}", exc_info=True)
 
 
 class VBANCapture:
@@ -230,19 +272,138 @@ class VBANCapture:
             sock.close()
 
 
+# ---------------------------------------------------------------------------
+# Hallucination removal
+# ---------------------------------------------------------------------------
+
+# Regex to strip timestamp prefix: "[00:01:23.000 --> 00:01:27.000]   text"
+_TS_RE = re.compile(r"^\[[\d:.]+\s*-->\s*[\d:.]+\]\s*")
+
+# Consecutive identical lines beyond this threshold are considered hallucination
+_HALLUCINATION_REPEAT_THRESHOLD = 3
+
+
+def _remove_hallucinated_lines(transcript: str) -> str:
+    """Remove hallucinated repetitive lines from a whisper transcript.
+
+    Whisper models (especially large-v3) tend to generate the same phrase
+    over and over during silence or low-signal audio. This function detects
+    runs of consecutive lines with identical text content (ignoring timestamps)
+    and collapses them. Runs shorter than _HALLUCINATION_REPEAT_THRESHOLD are
+    kept intact (normal conversational repetition like "yeah" / "okay").
+    """
+    lines = transcript.split("\n")
+    if not lines:
+        return transcript
+
+    kept: list[str] = []
+    prev_text: str | None = None
+    run_length = 0
+
+    for line in lines:
+        stripped = _TS_RE.sub("", line).strip()
+
+        if stripped == prev_text and stripped:
+            run_length += 1
+        else:
+            # Flush previous run
+            if run_length > 0 and run_length < _HALLUCINATION_REPEAT_THRESHOLD:
+                # Short run — keep all lines (normal repetition)
+                kept.extend(_pending_run)
+            elif run_length >= _HALLUCINATION_REPEAT_THRESHOLD:
+                # Long run — hallucination, drop all
+                logger.info(
+                    f"Removed {run_length} hallucinated repetitions of: "
+                    f"{prev_text!r}"
+                )
+            # Start new run
+            prev_text = stripped
+            run_length = 1
+            _pending_run = [line]
+            continue
+
+        _pending_run.append(line)
+
+    # Flush final run
+    if run_length > 0 and run_length < _HALLUCINATION_REPEAT_THRESHOLD:
+        kept.extend(_pending_run)
+    elif run_length >= _HALLUCINATION_REPEAT_THRESHOLD:
+        logger.info(
+            f"Removed {run_length} hallucinated repetitions of: "
+            f"{prev_text!r}"
+        )
+
+    removed = len(lines) - len(kept)
+    if removed > 0:
+        logger.info(
+            f"Hallucination filter: removed {removed}/{len(lines)} lines "
+            f"({removed/len(lines)*100:.0f}%)"
+        )
+    return "\n".join(kept)
+
+
+# Regex to parse start/end times from timestamp lines
+_TS_PARSE_RE = re.compile(
+    r"^\[(\d+):(\d+):(\d+\.\d+)\s*-->\s*(\d+):(\d+):(\d+\.\d+)\]\s*(.*)"
+)
+
+# Gap threshold in seconds — insert blank line when gap exceeds this
+_SPEAKER_GAP_SECONDS = 2.0
+
+
+def _strip_timestamps_with_gaps(transcript: str) -> str:
+    """Strip timestamp prefixes, inserting blank lines at significant gaps.
+
+    Converts timestamped whisper output into plain text while preserving
+    speaker-turn signals: when there is a gap of >2s between the end of
+    one segment and the start of the next, a blank line is inserted.
+    This tells the downstream LLM that a speaker change likely occurred.
+    """
+    lines = transcript.split("\n")
+    result: list[str] = []
+    prev_end: float | None = None
+
+    for line in lines:
+        m = _TS_PARSE_RE.match(line)
+        if not m:
+            # Non-timestamped line (blank, etc.) — pass through
+            result.append(line)
+            prev_end = None
+            continue
+
+        h1, m1, s1, h2, m2, s2, text = m.groups()
+        start = int(h1) * 3600 + int(m1) * 60 + float(s1)
+        end = int(h2) * 3600 + int(m2) * 60 + float(s2)
+
+        # Insert blank line if there's a significant gap
+        if prev_end is not None and (start - prev_end) > _SPEAKER_GAP_SECONDS:
+            result.append("")
+
+        result.append(text.strip() if text.strip() else "")
+        prev_end = end
+
+    # Remove leading/trailing blank lines and collapse triple+ blanks
+    cleaned = "\n".join(result).strip()
+    while "\n\n\n" in cleaned:
+        cleaned = cleaned.replace("\n\n\n", "\n\n")
+    return cleaned
+
+
 async def _transcribe(recording: Recording) -> None:
     """Run whisper.cpp on the recorded audio and post result to webhook."""
     recording.state = RecordingState.TRANSCRIBING
     transcript_path = recording.audio_path.with_suffix(".txt")
 
     try:
-        # Run whisper.cpp
+        # Run whisper.cpp — stdout gives us timestamped transcript
         cmd = [
             WHISPER_CLI,
             "-m", WHISPER_MODEL,
             "-f", str(recording.audio_path),
             "-l", "en",
             "--print-progress",
+            "--no-fallback",     # prevent temperature fallback (reduces hallucination)
+            "--suppress-nst",    # suppress non-speech tokens
         ]
         logger.info(f"Starting transcription: {recording.title}")
 
@@ -260,14 +421,18 @@ async def _transcribe(recording: Recording) -> None:
             logger.error(f"Transcription failed for {recording.title}: {recording.error}")
             return
 
-        transcript_text = stdout.decode().strip()
-        if not transcript_text:
+        # Use stdout (timestamped) as the canonical transcript
+        raw_text = stdout.decode().strip()
+        if not raw_text:
             recording.state = RecordingState.FAILED
             recording.error = "whisper-cli produced empty output"
             logger.error(f"Empty transcription for {recording.title}")
             return
 
-        # Write transcript to file for reference
+        transcript_text = _remove_hallucinated_lines(raw_text)
+        transcript_text = _strip_timestamps_with_gaps(transcript_text)
+
+        # Write cleaned transcript to file
         transcript_path.write_text(transcript_text)
         recording.transcript_path = transcript_path
 
@@ -308,6 +473,27 @@ async def _transcribe(recording: Recording) -> None:
         logger.error(f"Transcription error for {recording.title}: {e}", exc_info=True)
 
 
+async def _transcription_worker() -> None:
+    """Background worker that processes transcriptions sequentially.
+
+    Pulls recordings from the queue one at a time so that only a single
+    whisper-cli process runs at once, avoiding CPU/memory contention.
+    """
+    while True:
+        recording = await _transcription_queue.get()
+        queue_depth = _transcription_queue.qsize()
+        if queue_depth > 0:
+            logger.info(f"Transcription queue: starting '{recording.title}' "
+                        f"({queue_depth} more waiting)")
+        try:
+            await _transcribe(recording)
+        except Exception as e:
+            logger.error(f"Transcription worker error: {e}", exc_info=True)
+        finally:
+            _archive_recording(recording)
+            _transcription_queue.task_done()
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -320,6 +506,8 @@ async def status():
         "status": "ok",
         "service": "transcriber",
         "recording": active_recording.to_dict() if active_recording else None,
+        "transcription_queue_depth": _transcription_queue.qsize(),
+        "recording_max_age_days": RECORDING_MAX_AGE_DAYS,
         "disk_free_gb": round(_disk_free_gb(), 1),
         "whisper_model": WHISPER_MODEL,
         "webhook_url": WEBHOOK_URL,
@@ -370,7 +558,7 @@ async def start(req: StartRequest):
 @app.post("/stop")
 async def stop():
     """Stop recording, queue for transcription."""
-    global active_recording, _transcription_task
+    global active_recording
 
     if not active_recording or active_recording.state != RecordingState.RECORDING:
         raise HTTPException(status_code=404, detail="No active recording")
@@ -393,17 +581,20 @@ async def stop():
         active_recording = None
         raise HTTPException(status_code=500, detail="Recording failed: no audio captured")
 
-    # Queue transcription in background
-    _transcription_task = asyncio.create_task(_transcribe(recording))
-    _transcription_task.add_done_callback(lambda _: _archive_recording(recording))
-
+    # Enqueue for sequential transcription
+    await _transcription_queue.put(recording)
+    queue_depth = _transcription_queue.qsize()
     active_recording = None
+
+    message = f"Transcription queued. Audio: {recording.audio_path.name}"
+    if queue_depth > 1:
+        message += f" ({queue_depth} in queue)"
 
     return StopResponse(
         status="transcribing",
         title=recording.title,
         duration_seconds=round(duration, 1),
-        message=f"Transcription queued. Audio: {recording.audio_path.name}",
+        message=message,
     )
 
 
@@ -412,6 +603,62 @@ def _archive_recording(recording: Recording) -> None:
     recent_recordings.insert(0, recording)
     while len(recent_recordings) > MAX_RECENT:
         recent_recordings.pop()
+
+
+class RetranscribeRequest(BaseModel):
+    filename: str  # WAV filename in recordings dir
+
+
+@app.post("/retranscribe")
+async def retranscribe(req: RetranscribeRequest):
+    """Queue an existing WAV file for (re-)transcription.
+
+    Useful for recordings that fell between deploys or need re-processing.
+    The filename should be relative to the recordings directory.
+    """
+    audio_path = RECORDINGS_DIR / req.filename
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {req.filename}")
+    if audio_path.suffix != ".wav":
+        raise HTTPException(status_code=400, detail="Only .wav files can be transcribed")
+    if audio_path.stat().st_size < 1000:
+        raise HTTPException(status_code=400, detail="Audio file too small")
+
+    # Derive title from filename: strip date prefix and extension
+    # e.g. "20260206-113236-Sync-on-tented-model.wav" → "Sync-on-tented-model"
+    stem = audio_path.stem
+    parts = stem.split("-", 2)  # split on first two hyphens (date, time, rest)
+    title = parts[2] if len(parts) > 2 else stem
+
+    # Infer meeting timestamps from file modification time
+    mtime = datetime.fromtimestamp(audio_path.stat().st_mtime, tz=timezone.utc)
+    try:
+        import wave
+        with wave.open(str(audio_path)) as w:
+            duration_secs = w.getnframes() / w.getframerate()
+    except Exception:
+        duration_secs = 0
+    start_time = mtime - timedelta(seconds=duration_secs) if duration_secs else mtime
+
+    recording = Recording(title=title, audio_path=audio_path)
+    recording.meeting_start = start_time
+    recording.meeting_end = mtime
+
+    await _transcription_queue.put(recording)
+    queue_depth = _transcription_queue.qsize()
+
+    message = f"Retranscription queued: {req.filename}"
+    if queue_depth > 1:
+        message += f" ({queue_depth} in queue)"
+    logger.info(message)
+
+    return {
+        "status": "queued",
+        "title": title,
+        "filename": req.filename,
+        "duration_seconds": round(duration_secs, 1),
+        "message": message,
+    }
 
 
 @app.get("/recordings")
@@ -431,12 +678,24 @@ async def recordings():
 @app.on_event("startup")
 async def startup():
     """Validate environment on startup."""
+    global _queue_worker_task, _transcription_queue
+
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Create the queue in the running event loop
+    _transcription_queue = asyncio.Queue()
 
     if not Path(WHISPER_CLI).exists():
         logger.warning(f"whisper-cli not found at {WHISPER_CLI}")
     if not Path(WHISPER_MODEL).exists():
         logger.warning(f"Whisper model not found at {WHISPER_MODEL}")
+
+    # Start the sequential transcription worker
+    _queue_worker_task = asyncio.create_task(_transcription_worker())
+
+    # Run initial cleanup and start periodic cleanup task
+    cleanup_old_recordings()
+    asyncio.create_task(_cleanup_loop())
 
     logger.info(f"Transcriber starting on {HOST}:{PORT}")
     logger.info(f"  Whisper CLI:  {WHISPER_CLI}")
