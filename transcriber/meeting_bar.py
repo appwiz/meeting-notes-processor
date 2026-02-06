@@ -34,6 +34,7 @@ Usage:
 import datetime
 import logging
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -53,6 +54,9 @@ TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "http://pilot:8000")
 PILOT_HOST = os.getenv("PILOT_HOST", "pilot")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
+
+# Calendar org file for meeting title lookup (optional)
+CALENDAR_ORG = os.getenv("MEETING_CALENDAR_ORG", os.path.expanduser("~/gtd/outlook.org"))
 
 DEVICE_PREFERENCE = [
     "BlackHole 2ch",
@@ -82,6 +86,79 @@ ICON_ERROR = "⚠️"
 
 # Compiled Swift helper for CoreAudio mic detection (Teams 2.x)
 MIC_ACTIVE_BIN = Path(__file__).parent / "mic_active"
+
+
+# ---------------------------------------------------------------------------
+# Calendar Title Lookup
+# ---------------------------------------------------------------------------
+
+
+def lookup_calendar_title(now: datetime.datetime | None = None) -> str | None:
+    """Find the best matching calendar entry title for the current time.
+
+    Parses CALENDAR_ORG (org-mode format) and finds the meeting whose start
+    time is closest to `now`, subject to these rules:
+      - Nothing ever starts more than 5 minutes early
+      - If we're more than 25 minutes past a meeting's start time, it's
+        likely a spontaneous meeting (return None)
+      - Only considers today's entries
+
+    Returns the meeting title string, or None if no match.
+    """
+    cal_path = Path(CALENDAR_ORG)
+    if not cal_path.exists():
+        return None
+
+    if now is None:
+        now = datetime.datetime.now()
+
+    today_str = now.strftime("%Y-%m-%d")
+
+    try:
+        content = cal_path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.debug(f"Cannot read calendar file: {e}")
+        return None
+
+    # Parse org entries: * Title <YYYY-MM-DD Day HH:MM-HH:MM>
+    entry_re = re.compile(
+        r'^\* (.+?) <(\d{4}-\d{2}-\d{2}) \w{3} (\d{2}:\d{2})-(\d{2}:\d{2})>',
+        re.MULTILINE,
+    )
+
+    best_title = None
+    best_delta = None  # seconds from meeting start to now (positive = we're late)
+
+    for m in entry_re.finditer(content):
+        date_str = m.group(2)
+        if date_str != today_str:
+            continue
+
+        title = m.group(1).strip()
+        start_str = m.group(3)
+
+        try:
+            start_time = datetime.datetime.strptime(
+                f"{date_str} {start_str}", "%Y-%m-%d %H:%M"
+            )
+        except ValueError:
+            continue
+
+        delta_s = (now - start_time).total_seconds()
+
+        # Skip if meeting hasn't started yet and we're more than 5 min early
+        if delta_s < -300:
+            continue
+        # Skip if we're more than 25 min past the start
+        if delta_s > 1500:
+            continue
+
+        abs_delta = abs(delta_s)
+        if best_delta is None or abs_delta < best_delta:
+            best_delta = abs_delta
+            best_title = title
+
+    return best_title
 
 # ---------------------------------------------------------------------------
 # Meeting Detection
@@ -475,8 +552,13 @@ class MeetingBarApp(rumps.App):
                 pass  # User manually stopped; wait for meeting to end
             else:
                 logger.info(f"Meeting detected: {meeting_app}")
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                title = f"{meeting_app} Meeting {timestamp}"
+                cal_title = lookup_calendar_title()
+                if cal_title:
+                    title = cal_title
+                    logger.info(f"Calendar match: '{cal_title}'")
+                else:
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    title = f"{meeting_app} Meeting {timestamp}"
                 threading.Thread(
                     target=self._do_start, args=(title, meeting_app, True), daemon=True,
                 ).start()
@@ -587,7 +669,6 @@ class MeetingBarApp(rumps.App):
 
     @rumps.clicked("Start Recording")
     def on_start(self, sender):
-        # TODO: Sniff meeting title from calendar event when available
         try:
             logger.info("on_start callback fired")
             with self._lock:
@@ -595,8 +676,13 @@ class MeetingBarApp(rumps.App):
                     logger.info("Already recording or busy")
                     return
 
-            title = f"Meeting at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            logger.info(f"Manual start: '{title}'")
+            cal_title = lookup_calendar_title()
+            if cal_title:
+                title = cal_title
+                logger.info(f"Manual start with calendar title: '{title}'")
+            else:
+                title = f"Meeting at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                logger.info(f"Manual start: '{title}'")
             self._schedule_ui_update()
             threading.Thread(
                 target=self._do_start, args=(title, "Manual", False), daemon=True,
@@ -661,6 +747,7 @@ def main():
     logger.info(f"  Transcriber: {TRANSCRIBER_URL}")
     logger.info(f"  VBAN target: {PILOT_HOST}:{VBAN_PORT}")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
+    logger.info(f"  Calendar: {CALENDAR_ORG}")
     logger.info(f"  Log: {LOG_PATH}")
     logger.info("  Quit: use Quit menu item, or Ctrl-\\ from terminal")
 

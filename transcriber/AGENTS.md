@@ -126,7 +126,7 @@ or mDNS).
 | `TRANSCRIBER_URL` | `http://pilot:8000` | |
 | `PILOT_HOST` | `pilot` | For VBAN target |
 | `VBAN_PORT` | `6980` | |
-| `MEETING_POLL_INTERVAL` | `5` | Seconds between detection checks |
+| `MEETING_POLL_INTERVAL` | `5` | Seconds between detection checks |\n| `MEETING_CALENDAR_ORG` | `~/gtd/outlook.org` | Org-mode calendar for title lookup |
 
 ## Whisper Configuration
 
@@ -186,6 +186,23 @@ Microsoft Teams.
 
 BlackHole requires a reboot after installation to register as a system audio
 device.
+
+## Calendar Title Lookup
+
+When a meeting is detected (or manually started), `meeting_bar.py` optionally
+looks up the meeting title from an org-mode calendar file (`~/gtd/outlook.org`
+by default, configurable via `MEETING_CALENDAR_ORG`).
+
+Matching rules:
+- Only considers today's entries with timestamps
+- Finds the entry whose start time is closest to now
+- Nothing starts more than 5 minutes early (future entries beyond 5 min skipped)
+- If more than 25 minutes past a meeting's start, assumes spontaneous meeting
+  (no calendar match)
+- Falls back to generic "App Meeting YYYY-MM-DD HH:MM" title if no match
+
+The matched title is shown in the menu bar status, used as the recording title
+sent to the transcriber, and logged.
 
 ## Makefile Reference
 

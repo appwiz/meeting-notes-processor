@@ -213,7 +213,7 @@ User selects which LLM to use via command-line argument or configuration, provid
 
 Core calendar matching and enrichment is implemented and working in production. Calendar context is included in the single-pass LLM summarization prompt, with time-based and participant-based matching. Recent notes context provides disambiguation for same-day meetings. The `/calendar` webhook endpoint on `meetingnotesd.py` receives calendar.org updates.
 
-**Remaining:** Slug enrichment (renaming files with participant names), tests with example calendar data, README documentation.
+**Remaining:** Tests with example calendar data, README documentation.
 
 ### Overview
 
@@ -340,21 +340,10 @@ When a calendar match is found, the notes file is updated:
 
 **Enrichment rules:**
 1. **Title**: Incorporate calendar meeting title/participants for clarity
-2. **Slug**: Update to include participant names or meeting type for easier scanning
-   - Example: `sales-pipeline-review` → `dana-sales-pipeline`
-   - Example: `quarterly-planning` → `sam-q1-planning`
-   - Prioritize: person names > meeting type > topic keywords
-3. **Timestamp**: Update to exact calendar time if more precise
-4. **Participants**: Merge calendar attendees with detected speakers
-5. **New properties**: Add `CALENDAR_MATCH`, `CALENDAR_TIME`, `MEETING_LINK`
-6. **Preserve**: Keep AI-generated TL;DR, actions, summary unchanged
-7. **Rename files**: After enrichment, rename both notes and transcript files to match new slug
-
-**Slug improvement rationale:**
-When browsing `notes/` directory, filenames like `20260120-dana-sales-pipeline.org` are far more useful than `20260120-sales-pipeline.org` because:
-- Immediately identifies who the meeting was with
-- Groups related 1:1s together when sorted alphabetically
-- Reduces need to open files to find the right one
+2. **Timestamp**: Update to exact calendar time if more precise
+3. **Participants**: Merge calendar attendees with detected speakers
+4. **New properties**: Add `CALENDAR_MATCH`, `CALENDAR_TIME`, `MEETING_LINK`
+5. **Preserve**: Keep AI-generated TL;DR, actions, summary unchanged
 
 ### Implementation Options
 
@@ -547,9 +536,8 @@ def enrich_with_calendar(notes_path, calendar_path, date_str):
 5. [x] Add `--calendar` / `--no-calendar` CLI flags
 6. [x] Integrate into `process_transcript()` flow — calendar matching is single-pass with summarization
 7. [x] Gather recent notes context for disambiguation — `gather_recent_notes_context()`
-8. [ ] Slug enrichment: rename files with participant names after calendar match
-9. [ ] Add tests with example calendar data
-10. [ ] Document calendar feature in README
+8. [ ] Add tests with example calendar data
+9. [ ] Document calendar feature in README
 
 ### Open Questions
 
