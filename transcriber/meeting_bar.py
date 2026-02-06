@@ -539,77 +539,94 @@ class MeetingBarApp(rumps.App):
 
     def _start_recording(self, title: str, app: str, auto: bool = False):
         """Start the full recording pipeline. Call from background thread."""
-        logger.info(f"Starting recording: '{title}' ({app}, auto={auto})")
-
-        # Find audio device
-        device_name, quality = find_best_device()
-        if not device_name:
-            logger.error("No suitable audio device found")
-            self._set_error("No audio device")
-            return False
-
-        # Find mic for mixing
-        mic_name = None
-        if quality == "full":
-            mic_name = find_mic_device()
-
-        # Start VBAN sender
         try:
-            start_sender(device_name, mic=mic_name)
+            logger.info(f"Starting recording: '{title}' ({app}, auto={auto})")
+
+            # Find audio device
+            device_name, quality = find_best_device()
+            if not device_name:
+                logger.error("No suitable audio device found")
+                self._set_error("No audio device")
+                return False
+
+            # Find mic for mixing
+            mic_name = None
+            if quality == "full":
+                mic_name = find_mic_device()
+
+            # Start VBAN sender
+            try:
+                start_sender(device_name, mic=mic_name)
+            except Exception as e:
+                logger.error(f"Failed to start VBAN sender: {e}")
+                self._set_error("VBAN sender failed")
+                return False
+
+            # Wait for VBAN to connect
+            time.sleep(3)
+
+            # Start recording on pilot
+            result = transcriber_start(title)
+            if not result:
+                logger.error("Failed to start recording on pilot")
+                stop_sender()
+                self._set_error("Pilot start failed")
+                return False
+
+            # Update state and queue UI update
+            with self._lock:
+                self.state.start(title, app, auto=auto)
+                self._pending_title_icon = ICON_RECORDING
+                self._pending_status_text = f"Recording: {title}"
+                self._pending_start_enabled = False
+                self._pending_stop_enabled = True
+
+            logger.info(f"Recording started: '{title}'")
+            return True
+
         except Exception as e:
-            logger.error(f"Failed to start VBAN sender: {e}")
-            self._set_error("VBAN sender failed")
+            logger.error(f"Recording start failed: {e}", exc_info=True)
+            self._set_error("Start failed")
             return False
-
-        # Wait for VBAN to connect
-        time.sleep(3)
-
-        # Start recording on pilot
-        result = transcriber_start(title)
-        if not result:
-            logger.error("Failed to start recording on pilot")
-            stop_sender()
-            self._set_error("Pilot start failed")
-            return False
-
-        # Update state and queue UI update
-        with self._lock:
-            self.state.start(title, app, auto=auto)
-            self._pending_title_icon = ICON_RECORDING
-            self._pending_status_text = f"Recording: {title}"
-            self._pending_start_enabled = False
-            self._pending_stop_enabled = True
-
-        logger.info(f"Recording started: '{title}'")
-        return True
 
     def _stop_recording(self):
         """Stop the full recording pipeline. Call from background thread."""
-        logger.info("Stopping recording")
+        try:
+            logger.info("Stopping recording")
 
-        result = transcriber_stop()
-        stop_sender()
+            result = transcriber_stop()
+            stop_sender()
 
-        with self._lock:
-            title = self.state.meeting_title
-            duration = self.state.duration
-            self.state.stop()
-
-            self._pending_title_icon = ICON_IDLE
-            self._pending_status_text = "Status: Idle"
-            self._pending_start_enabled = True
-            self._pending_stop_enabled = False
-
-        if result:
-            logger.info(f"Recording stopped: '{title}' ({duration})")
             with self._lock:
-                self._pending_notification = (
-                    "Recording Stopped",
-                    title or "Meeting",
-                    f"Duration: {duration}. Transcription queued.",
-                )
-        else:
-            logger.warning("Recording stop — no active recording on pilot")
+                title = self.state.meeting_title
+                duration = self.state.duration
+                self.state.stop()
+
+                self._pending_title_icon = ICON_IDLE
+                self._pending_status_text = "Status: Idle"
+                self._pending_start_enabled = True
+                self._pending_stop_enabled = False
+
+            if result:
+                logger.info(f"Recording stopped: '{title}' ({duration})")
+                with self._lock:
+                    self._pending_notification = (
+                        "Recording Stopped",
+                        title or "Meeting",
+                        f"Duration: {duration}. Transcription queued.",
+                    )
+            else:
+                logger.warning("Recording stop — no active recording on pilot")
+
+        except Exception as e:
+            logger.error(f"Recording stop failed: {e}", exc_info=True)
+            # Force back to idle state
+            with self._lock:
+                self.state.stop()
+                self._pending_title_icon = ICON_IDLE
+                self._pending_status_text = "Status: Idle"
+                self._pending_start_enabled = True
+                self._pending_stop_enabled = False
 
     def _auto_start(self, app: str):
         """Auto-start recording for a detected meeting."""
@@ -636,24 +653,30 @@ class MeetingBarApp(rumps.App):
 
     def on_start(self, _sender):
         """Manual start — prompt for meeting title."""
-        window = rumps.Window(
-            title="Start Recording",
-            message="Enter a meeting title:",
-            default_text="",
-            ok="Start",
-            cancel="Cancel",
-            dimensions=(320, 24),
-        )
-        response = window.run()
-        if response.clicked:
-            title = response.text.strip()
-            if not title:
-                title = f"Meeting {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            threading.Thread(
-                target=self._start_recording,
-                args=(title, "Manual", False),
-                daemon=True,
-            ).start()
+        try:
+            window = rumps.Window(
+                title="Start Recording",
+                message="Enter a meeting title:",
+                default_text="",
+                ok="Start",
+                cancel="Cancel",
+                dimensions=(320, 24),
+            )
+            response = window.run()
+            if response.clicked:
+                title = response.text.strip()
+                if not title:
+                    title = f"Meeting {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                logger.info(f"Manual start requested: '{title}'")
+                threading.Thread(
+                    target=self._start_recording,
+                    args=(title, "Manual", False),
+                    daemon=True,
+                ).start()
+            else:
+                logger.info("Start recording cancelled by user")
+        except Exception as e:
+            logger.error(f"Start dialog failed: {e}", exc_info=True)
 
     def on_stop(self, _sender):
         """Manual stop."""
@@ -675,11 +698,14 @@ class MeetingBarApp(rumps.App):
 
     def on_quit(self, _sender):
         """Clean shutdown."""
+        logger.info("Quit requested")
         if self.state.state == RecordingState.RECORDING:
-            # Stop recording before quitting
-            logger.info("Quit requested — stopping recording first")
+            logger.info("Stopping recording before quit")
             self._stop_recording()
-        rumps.quit_application()
+        logger.info("Meeting Bar exiting")
+        # rumps.quit_application() doesn't always work reliably,
+        # so force exit after cleanup
+        os._exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +719,7 @@ def main():
     logger.info(f"  VBAN target: {PILOT_HOST}:{VBAN_PORT}")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
     logger.info(f"  Log file: {LOG_PATH}")
+    logger.info("  Quit: use menu Quit item, or Ctrl-\\ from terminal")
 
     app = MeetingBarApp()
     app.run()
