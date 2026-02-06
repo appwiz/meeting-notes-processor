@@ -242,7 +242,6 @@ async def _transcribe(recording: Recording) -> None:
             "-m", WHISPER_MODEL,
             "-f", str(recording.audio_path),
             "-l", "en",
-            "--no-timestamps",
             "--print-progress",
         ]
         logger.info(f"Starting transcription: {recording.title}")
