@@ -572,7 +572,7 @@ def enrich_with_calendar(org_path: str, transcript_path: str, calendar_path: str
     prompt = build_calendar_prompt(notes, day_entries)
     
     model_name = model if model else 'claude-sonnet-4.5'
-    command = [COPILOT_PATH, '-p', prompt, '--model', model_name]
+    command = [COPILOT_PATH, '-p', prompt, '--allow-all-tools', '--allow-all-paths', '--model', model_name]
     
     try:
         if debug:
@@ -756,12 +756,14 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
         command = [
             COPILOT_PATH,
             '-p', final_prompt,
-            '--allow-tool', 'write',
+            '--allow-all-tools',
+            '--allow-all-paths',
             '--model', model_name
         ]
         try:
             if debug:
-                print(f"  Running: {' '.join(command[:4])} '<prompt>' {' '.join(command[5:])}")
+                cmd_display = [c if c != final_prompt else '<prompt>' for c in command]
+                print(f"  Running: {' '.join(cmd_display)}")
                 print(f"  Working directory: {os.path.abspath(workspace_dir)}")
                 print(f"  Prompt length: {len(final_prompt)} chars")
             else:
