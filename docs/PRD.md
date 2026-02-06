@@ -536,8 +536,8 @@ def enrich_with_calendar(notes_path, calendar_path, date_str):
 5. [x] Add `--calendar` / `--no-calendar` CLI flags
 6. [x] Integrate into `process_transcript()` flow — calendar matching is single-pass with summarization
 7. [x] Gather recent notes context for disambiguation — `gather_recent_notes_context()`
-8. [ ] Add tests with example calendar data
-9. [ ] Document calendar feature in README
+8. [x] Add tests with example calendar data
+9. [x] Document calendar feature in README
 
 ### Open Questions
 

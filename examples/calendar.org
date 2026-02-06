@@ -1,0 +1,36 @@
+* Edd / Sarah 1:1 <2026-01-26 Mon 09:00-09:30>
+:PROPERTIES:
+:PARTICIPANTS: Sarah Chen <schen@example.com>, Edd Wilder-James <ewj@example.com>
+:END:
+[[https://teams.microsoft.com/l/meetup-join/abc123][📹 Join Meeting]]
+
+* Engineering Town Hall <2026-01-26 Mon 10:00-11:00>
+:PROPERTIES:
+:PARTICIPANTS: Edd Wilder-James, Sarah Chen, Mia Arts, Brian Taylor, Joe Kim, Chris Martin
+:END:
+[[https://teams.microsoft.com/l/meetup-join/def456][📹 Join Meeting]]
+
+* Lunch Break <2026-01-26 Mon 12:00-13:00>
+
+* Thabani / Edd 1:1 <2026-01-26 Mon 14:00-14:30>
+:PROPERTIES:
+:PARTICIPANTS: Thabani Ndlovu <thabani11@example.com>, Edd Wilder-James <ewj@example.com>
+:END:
+[[https://teams.microsoft.com/l/meetup-join/ghi789][📹 Join Meeting]]
+
+* CIP SLT Sync <2026-01-26 Mon 15:00-16:00>
+:PROPERTIES:
+:PARTICIPANTS: Edd Wilder-James, Marion Lopez, Brian Taylor
+:END:
+
+* Company All Hands <2026-01-27 Tue>
+
+* Mia / Edd 1:1 <2026-01-27 Tue 09:30-10:00>
+:PROPERTIES:
+:PARTICIPANTS: Mia Arts <its-mia@example.com>, Edd Wilder-James <ewj@example.com>
+:END:
+
+* Sprint Planning <2026-01-27 Tue 14:00-15:30>
+:PROPERTIES:
+:PARTICIPANTS: Edd Wilder-James, Sarah Chen, Joe Kim
+:END:

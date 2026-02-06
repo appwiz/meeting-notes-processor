@@ -19,6 +19,7 @@ Read my blog post for the [story of how this came to be](https://wilder-james.co
   - [Standalone Mode](#standalone-mode-local-processing)
   - [Relay Mode](#relay-mode-cloud-processing-via-github-actions)
   - [Daemon Configuration Reference](#daemon-configuration-reference)
+- [Calendar Integration](#calendar-integration)
 - [GitHub Actions Setup](#github-actions-setup)
 - [Output Format](#output-format)
 - [Command Reference](#command-reference)
@@ -456,7 +457,84 @@ When `calendar.org` exists in your data repo, `run_summarization.py` automatical
 - Correct speaker misidentification in transcripts
 - Add accurate meeting times and attendee information
 
-See [PRD.md](docs/PRD.md) Phase 7 for details on calendar integration.
+---
+
+## Calendar Integration
+
+The processor can cross-reference your calendar to improve meeting notes — correcting misidentified speakers, matching transcripts to the right meeting, and adding accurate metadata.
+
+### How It Works
+
+1. Your calendar data lives as `calendar.org` in your data repo (org-mode format)
+2. When processing a transcript, the script finds calendar entries for that day
+3. Calendar context is included in the AI prompt so the LLM can:
+   - **Correct speaker names** — transcription often mishears names; calendar participants are authoritative
+   - **Match to the right meeting** — especially useful when you have multiple meetings per day
+   - **Add metadata** — `:CALENDAR_MATCH:`, `:CALENDAR_TIME:`, and `:MEETING_LINK:` properties
+
+### Calendar File Format
+
+The `calendar.org` file uses standard org-mode format. Each entry looks like:
+
+```org
+* Meeting Title <2026-01-26 Mon 14:00-14:30>
+:PROPERTIES:
+:PARTICIPANTS: Alice Smith <alice@example.com>, Bob Jones <bob@example.com>
+:END:
+[[https://teams.microsoft.com/l/meetup-join/abc123][📹 Join Meeting]]
+```
+
+- **Title**: The `*` heading with a `<timestamp>` in angle brackets
+- **Participants**: Comma-separated in `:PROPERTIES:` drawer (email addresses are stripped automatically)
+- **Meeting links**: Org-mode links with 📹 emoji are extracted as video call URLs
+- **All-day events**: Omit the time range: `<2026-01-26 Mon>`
+
+### Enabling/Disabling
+
+Calendar integration is **enabled by default** when `calendar.org` exists in your data repo. Control it with CLI flags:
+
+```bash
+# Default: calendar enabled (if calendar.org exists)
+uv run run_summarization.py --workspace ../my-meeting-notes
+
+# Explicitly disable
+uv run run_summarization.py --workspace ../my-meeting-notes --no-calendar
+
+# Explicitly enable (errors if calendar.org is missing)
+uv run run_summarization.py --workspace ../my-meeting-notes --calendar
+```
+
+### Updating Calendar Data
+
+Use the daemon's `/calendar` endpoint to push calendar data programmatically:
+
+```bash
+# Send calendar data as JSON
+curl -X POST http://localhost:9876/calendar \
+  -H "Content-Type: application/json" \
+  -d '{"calendar": "* Meeting <2026-01-22 Thu 10:00>"}'
+
+# Or pipe a file as plain text
+curl -X POST http://localhost:9876/calendar \
+  -H "Content-Type: text/plain" \
+  --data-binary @calendar.org
+```
+
+### What Gets Added to Notes
+
+When a transcript matches a calendar entry, these properties are added:
+
+```org
+:PROPERTIES:
+:PARTICIPANTS: Thabani, Edd
+:SLUG: thabani-edd-1-1
+:CALENDAR_MATCH: Thabani / Edd 1:1
+:CALENDAR_TIME: 14:00-14:30
+:MEETING_LINK: https://teams.microsoft.com/l/meetup-join/abc123
+:END:
+```
+
+For 1:1 meetings, the slug is automatically formatted as `firstname-edd-1-1`.
 
 ---
 
