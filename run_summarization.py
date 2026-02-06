@@ -21,6 +21,8 @@ import sys
 import glob
 import json
 import time as _time
+import uuid
+import select
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -697,7 +699,8 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
         date_str = get_date_from_file(input_file)
     
     meeting_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"  # YYYY-MM-DD format
-    temp_org_filename = f"temp-{date_str}.org"
+    temp_id = uuid.uuid4().hex[:8]
+    temp_org_filename = f"temp-{date_str}-{temp_id}.org"
     
     # Get basename for input file (relative to workspace)
     input_basename = os.path.basename(input_file)
@@ -764,7 +767,9 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
             else:
                 print(f"  Prompt length: {len(final_prompt)} chars")
 
+            per_file_timeout = 600  # 10 minutes per file
             start_time = _time.monotonic()
+            deadline = start_time + per_file_timeout
             process = subprocess.Popen(
                 command,
                 cwd=workspace_dir,
@@ -775,18 +780,51 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
             )
             output_lines = []
             last_progress = start_time
-            for line in process.stdout:
-                output_lines.append(line)
+            timed_out = False
+
+            while process.poll() is None:
                 now = _time.monotonic()
-                if debug:
-                    print(f"  {line}", end='', flush=True)
+                if now > deadline:
+                    process.kill()
+                    process.wait()
+                    timed_out = True
+                    break
+                remaining = min(5.0, deadline - now)
+                ready, _, _ = select.select([process.stdout], [], [], remaining)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        output_lines.append(line)
+                        now = _time.monotonic()
+                        if debug:
+                            print(f"  {line}", end='', flush=True)
+                        elif now - last_progress >= 30:
+                            elapsed = int(now - start_time)
+                            print(f"  ... still running ({elapsed}s, {len(output_lines)} lines) [{input_basename}]", flush=True)
+                            last_progress = now
                 elif now - last_progress >= 30:
                     elapsed = int(now - start_time)
-                    print(f"  ... still running ({elapsed}s, {len(output_lines)} lines)", flush=True)
+                    print(f"  ... still running ({elapsed}s, {len(output_lines)} lines) [{input_basename}]", flush=True)
                     last_progress = now
+
+            if timed_out:
+                elapsed = int(_time.monotonic() - start_time)
+                print(f"  Error: Copilot timed out after {elapsed}s [{input_basename}]")
+                # Clean up temp file if it exists
+                temp_org_path = os.path.join(workspace_dir, temp_org_filename)
+                if os.path.exists(temp_org_path):
+                    os.remove(temp_org_path)
+                return False, None, None
+
+            # Read remaining output after process exits
+            for line in process.stdout:
+                output_lines.append(line)
+                if debug:
+                    print(f"  {line}", end='', flush=True)
+
             process.wait()
             elapsed = int(_time.monotonic() - start_time)
-            print(f"  Copilot finished in {elapsed}s (exit code {process.returncode}, {len(output_lines)} lines)")
+            print(f"  Copilot finished in {elapsed}s (exit code {process.returncode}, {len(output_lines)} lines) [{input_basename}]")
             if process.returncode != 0:
                 # Show last few lines of output for diagnosis
                 tail = ''.join(output_lines[-10:])
@@ -811,7 +849,9 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
             else:
                 print(f"  Prompt length: {len(final_prompt)} chars")
 
+            per_file_timeout = 600  # 10 minutes per file
             start_time = _time.monotonic()
+            deadline = start_time + per_file_timeout
             process = subprocess.Popen(
                 command,
                 cwd=workspace_dir,
@@ -825,18 +865,50 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
             process.stdin.close()
             output_lines = []
             last_progress = start_time
-            for line in process.stdout:
-                output_lines.append(line)
+            timed_out = False
+
+            while process.poll() is None:
                 now = _time.monotonic()
-                if debug:
-                    print(f"  {line}", end='', flush=True)
+                if now > deadline:
+                    process.kill()
+                    process.wait()
+                    timed_out = True
+                    break
+                remaining = min(5.0, deadline - now)
+                ready, _, _ = select.select([process.stdout], [], [], remaining)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        output_lines.append(line)
+                        now = _time.monotonic()
+                        if debug:
+                            print(f"  {line}", end='', flush=True)
+                        elif now - last_progress >= 30:
+                            elapsed = int(now - start_time)
+                            print(f"  ... still running ({elapsed}s, {len(output_lines)} lines) [{input_basename}]", flush=True)
+                            last_progress = now
                 elif now - last_progress >= 30:
                     elapsed = int(now - start_time)
-                    print(f"  ... still running ({elapsed}s, {len(output_lines)} lines)", flush=True)
+                    print(f"  ... still running ({elapsed}s, {len(output_lines)} lines) [{input_basename}]", flush=True)
                     last_progress = now
+
+            if timed_out:
+                elapsed = int(_time.monotonic() - start_time)
+                print(f"  Error: Gemini timed out after {elapsed}s [{input_basename}]")
+                temp_org_path = os.path.join(workspace_dir, temp_org_filename)
+                if os.path.exists(temp_org_path):
+                    os.remove(temp_org_path)
+                return False, None, None
+
+            # Read remaining output after process exits
+            for line in process.stdout:
+                output_lines.append(line)
+                if debug:
+                    print(f"  {line}", end='', flush=True)
+
             process.wait()
             elapsed = int(_time.monotonic() - start_time)
-            print(f"  Gemini finished in {elapsed}s (exit code {process.returncode}, {len(output_lines)} lines)")
+            print(f"  Gemini finished in {elapsed}s (exit code {process.returncode}, {len(output_lines)} lines) [{input_basename}]")
             if process.returncode != 0:
                 tail = ''.join(output_lines[-10:])
                 print(f"  Error in summarization (last output):\n{tail}")
@@ -955,18 +1027,22 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     
     successful = 0
     failed = 0
-    processed_inbox_files = []
-    processed_transcript_files = []
-    processed_org_files = []
     
     for transcript_file in transcript_files:
         try:
             result = process_transcript(transcript_file, paths, target, model, prompt_template, debug, calendar_path)
             if result[0]:  # Success
                 successful += 1
-                processed_inbox_files.append(transcript_file)
-                processed_transcript_files.append(result[1])
-                processed_org_files.append(result[2])
+                # Immediately commit this file's changes so progress is preserved
+                # even if later files fail or the process times out
+                if use_git:
+                    print(f"  Committing changes for {os.path.basename(transcript_file)}...")
+                    git_commit_changes(
+                        [transcript_file],
+                        [result[1]],
+                        [result[2]],
+                        paths['workspace']
+                    )
             else:
                 failed += 1
         except Exception as e:
@@ -976,14 +1052,6 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     print(f"\n{'='*60}")
     print(f"Processing complete: {successful} successful, {failed} failed")
     print(f"{'='*60}")
-    
-    # Perform git operations if requested and there were successful processes
-    if use_git and successful > 0:
-        print(f"\nPerforming git operations...")
-        if git_commit_changes(processed_inbox_files, processed_transcript_files, processed_org_files, paths['workspace']):
-            print("Git operations completed successfully")
-        else:
-            print("Warning: Git operations failed")
     
     return successful, failed
 

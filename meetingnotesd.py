@@ -137,7 +137,7 @@ class RepoAgent:
         self.standalone_enabled = bool(_get_nested(config, ['processing', 'standalone', 'enabled'], False))
         self.standalone_command = _get_nested(config, ['processing', 'standalone', 'command'], 'uv run run_summarization.py --git')
         self.standalone_working_directory = _get_nested(config, ['processing', 'standalone', 'working_directory'], '.')
-        self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 600))
+        self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 1800))
         # Async mode: return immediately after saving file, process in background
         self.standalone_async = bool(_get_nested(config, ['processing', 'standalone', 'async'], False))
 
@@ -325,7 +325,15 @@ class RepoAgent:
         return True, "standalone processing completed"
 
     def run_standalone_processing_async(self) -> None:
-        """Run standalone processing in background thread, then push results."""
+        """Run standalone processing in background thread, then push results.
+        
+        If a processing thread is already running, skip — it will pick up
+        any new inbox files since run_summarization processes all files.
+        """
+        if self._processing_thread and self._processing_thread.is_alive():
+            logger.info("Processing already in progress, skipping (new files will be picked up)")
+            return
+
         def _background_task():
             try:
                 with self._lock:
