@@ -37,30 +37,49 @@ If the first query fails to find the meeting, try variations:
 
 ## Step 2: Format Org Note
 
+Use the EXACT format from `prompt.txt`. Key requirements:
+
+- Title is a **second level heading** (`**`) - meaningful, include team name in brackets if applicable
+- Tags: `:note:workiq:` (use `workiq` instead of `transcribed` since this is from WorkIQ)
+- Timestamp on line after title: `[YYYY-MM-DD DAY HH:MM]` (use meeting start time)
+- Property drawer with `:PARTICIPANTS:`, `:TOPIC:`, `:SLUG:`
+- SLUG: 2-5 word hyphenated lowercase slug for filename
+- Refer to participants by **full name** when known
+- Actions use `- [ ]` format with owner names
+- Wrap lines to 80 columns EXCEPT headings and list items
+- Use hyphen `-` for bullets, NOT asterisk
+
 ```org
-** [TITLE] :note:workiq:
-[YYYY-MM-DD DAY]
+** [Team if known] Meeting Title :note:workiq:
+[YYYY-MM-DD DAY HH:MM]
 :PROPERTIES:
-:PARTICIPANTS: [from WorkIQ]
-:TOPIC: [main topic]
-:SLUG: [2-5 word hyphenated slug]
-:SOURCE: WorkIQ (Microsoft 365 Copilot)
+:PARTICIPANTS: Full Name 1, Full Name 2, Edd Wilder-James
+:TOPIC: Brief topic description
+:SLUG: descriptive-meeting-slug
 :END:
 
-TL;DR: [one sentence]
+TL;DR: One sentence summary of the meeting outcome.
 
 *** Actions
 
-- [ ] [action with owner]
+- [ ] Full Name: Do the specific action
+- [ ] Another Person: Their assigned action
 
 *** Open questions
 
-- [question]
+- First unresolved question from the meeting
+- Second open question
 
 *** Summary
 
-[detailed summary, wrapped to 80 columns]
+Brief summary of the discussion, wrapped to 80 columns. Include key points,
+decisions made, and important context. Do not include timestamps or citations.
 ```
+
+Example title formats:
+- `** [CIP] Product Shaping: Auto Model Selection Strategy :note:workiq:`
+- `** Quality Workstream End-of-Month Update :note:workiq:`
+- `** 1:1 with Sharon Lo :note:workiq:`
 
 ## Step 3: Write File
 
