@@ -20,6 +20,7 @@ import argparse
 import sys
 import glob
 import json
+import time as _time
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -760,30 +761,37 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
                 print(f"  Running: {' '.join(command[:4])} '<prompt>' {' '.join(command[5:])}")
                 print(f"  Working directory: {os.path.abspath(workspace_dir)}")
                 print(f"  Prompt length: {len(final_prompt)} chars")
-                print(f"  {'='*50}")
-                print(f"  COPILOT OUTPUT:")
-                print(f"  {'='*50}")
-                # Stream output for debugging
-                process = subprocess.Popen(
-                    command,
-                    cwd=workspace_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1
-                )
-                for line in process.stdout:
-                    print(f"  {line}", end='', flush=True)
-                process.wait()
-                print(f"  {'='*50}")
-                print(f"  Exit code: {process.returncode}")
-                if process.returncode != 0:
-                    return False, None, None
             else:
-                result = subprocess.run(command, capture_output=True, text=True, cwd=workspace_dir)
-                if result.returncode != 0:
-                    print(f"  Error in summarization: {result.stderr}")
-                    return False, None, None
+                print(f"  Prompt length: {len(final_prompt)} chars")
+
+            start_time = _time.monotonic()
+            process = subprocess.Popen(
+                command,
+                cwd=workspace_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            output_lines = []
+            last_progress = start_time
+            for line in process.stdout:
+                output_lines.append(line)
+                now = _time.monotonic()
+                if debug:
+                    print(f"  {line}", end='', flush=True)
+                elif now - last_progress >= 30:
+                    elapsed = int(now - start_time)
+                    print(f"  ... still running ({elapsed}s, {len(output_lines)} lines)", flush=True)
+                    last_progress = now
+            process.wait()
+            elapsed = int(_time.monotonic() - start_time)
+            print(f"  Copilot finished in {elapsed}s (exit code {process.returncode}, {len(output_lines)} lines)")
+            if process.returncode != 0:
+                # Show last few lines of output for diagnosis
+                tail = ''.join(output_lines[-10:])
+                print(f"  Error in summarization (last output):\n{tail}")
+                return False, None, None
         except Exception as e:
             print(f"  Error running copilot: {e}")
             return False, None, None
@@ -800,33 +808,39 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
                 print(f"  Running: {' '.join(command)}")
                 print(f"  Working directory: {os.path.abspath(workspace_dir)}")
                 print(f"  Prompt length: {len(final_prompt)} chars")
-                print(f"  {'='*50}")
-                print(f"  GEMINI OUTPUT:")
-                print(f"  {'='*50}")
-                # Stream output for debugging
-                process = subprocess.Popen(
-                    command,
-                    cwd=workspace_dir,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1
-                )
-                process.stdin.write(final_prompt)
-                process.stdin.close()
-                for line in process.stdout:
-                    print(f"  {line}", end='', flush=True)
-                process.wait()
-                print(f"  {'='*50}")
-                print(f"  Exit code: {process.returncode}")
-                if process.returncode != 0:
-                    return False, None, None
             else:
-                result = subprocess.run(command, input=final_prompt, capture_output=True, text=True, cwd=workspace_dir)
-                if result.returncode != 0:
-                    print(f"  Error in summarization: {result.stderr}")
-                    return False, None, None
+                print(f"  Prompt length: {len(final_prompt)} chars")
+
+            start_time = _time.monotonic()
+            process = subprocess.Popen(
+                command,
+                cwd=workspace_dir,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            process.stdin.write(final_prompt)
+            process.stdin.close()
+            output_lines = []
+            last_progress = start_time
+            for line in process.stdout:
+                output_lines.append(line)
+                now = _time.monotonic()
+                if debug:
+                    print(f"  {line}", end='', flush=True)
+                elif now - last_progress >= 30:
+                    elapsed = int(now - start_time)
+                    print(f"  ... still running ({elapsed}s, {len(output_lines)} lines)", flush=True)
+                    last_progress = now
+            process.wait()
+            elapsed = int(_time.monotonic() - start_time)
+            print(f"  Gemini finished in {elapsed}s (exit code {process.returncode}, {len(output_lines)} lines)")
+            if process.returncode != 0:
+                tail = ''.join(output_lines[-10:])
+                print(f"  Error in summarization (last output):\n{tail}")
+                return False, None, None
         except Exception as e:
             print(f"  Error running gemini: {e}")
             return False, None, None

@@ -271,36 +271,57 @@ class RepoAgent:
         args = shlex.split(self.standalone_command)
         logger.info(f"Running standalone processing: {args} (cwd={working_dir}, WORKSPACE_DIR={env['WORKSPACE_DIR']})")
 
+        import time as _time
         try:
-            result = subprocess.run(
+            start_time = _time.monotonic()
+            process = subprocess.Popen(
                 args,
                 cwd=working_dir,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=self.standalone_timeout_seconds,
+                bufsize=1,
                 env=env,
             )
-        except subprocess.TimeoutExpired:
-            return False, f"standalone processing timed out after {self.standalone_timeout_seconds}s"
+            output_lines = []
+            last_progress = start_time
+            deadline = start_time + self.standalone_timeout_seconds
+
+            import select
+            while process.poll() is None:
+                # Use select to read with a timeout so we can check deadline
+                ready, _, _ = select.select([process.stdout], [], [], 5.0)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        output_lines.append(line)
+                        logger.info(f"  proc: {line.rstrip()}")
+                now = _time.monotonic()
+                if now - last_progress >= 30:
+                    elapsed = int(now - start_time)
+                    logger.info(f"  ... still running ({elapsed}s, {len(output_lines)} lines)")
+                    last_progress = now
+                if now > deadline:
+                    process.kill()
+                    process.wait()
+                    return False, f"standalone processing timed out after {self.standalone_timeout_seconds}s"
+
+            # Read remaining output after process exits
+            for line in process.stdout:
+                output_lines.append(line)
+                logger.info(f"  proc: {line.rstrip()}")
+
+            elapsed = int(_time.monotonic() - start_time)
         except Exception as e:
             return False, f"standalone processing failed: {e}"
 
-        if result.returncode != 0:
-            stderr = (result.stderr or '').strip()
-            stdout = (result.stdout or '').strip()
-            # Include output for debugging
-            detail = stderr or stdout or 'non-zero exit'
+        if process.returncode != 0:
+            detail = ''.join(output_lines[-10:]).strip() or 'non-zero exit'
             if len(detail) > 500:
                 detail = detail[:500] + '...'
-            return False, f"standalone processing failed: {detail}"
+            return False, f"standalone processing failed (exit {process.returncode}, {elapsed}s): {detail}"
 
-        # Log stdout for debugging even on success
-        stdout = (result.stdout or '').strip()
-        if stdout:
-            for line in stdout.split('\n')[:20]:  # First 20 lines
-                logger.info(f"  stdout: {line}")
-
-        logger.info("Standalone processing completed successfully")
+        logger.info(f"Standalone processing completed in {elapsed}s")
         return True, "standalone processing completed"
 
     def run_standalone_processing_async(self) -> None:
