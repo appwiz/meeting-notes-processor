@@ -354,7 +354,7 @@ processing:
     enabled: false
     command: "uv run run_summarization.py --git"
     working_directory: "."
-    timeout_seconds: 300
+    timeout_seconds: 600
     async: false  # Return immediately from webhook, process in background
 
 # RELAY MODE: trigger GitHub Actions

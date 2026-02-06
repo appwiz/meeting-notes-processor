@@ -137,7 +137,7 @@ class RepoAgent:
         self.standalone_enabled = bool(_get_nested(config, ['processing', 'standalone', 'enabled'], False))
         self.standalone_command = _get_nested(config, ['processing', 'standalone', 'command'], 'uv run run_summarization.py --git')
         self.standalone_working_directory = _get_nested(config, ['processing', 'standalone', 'working_directory'], '.')
-        self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 300))
+        self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 600))
         # Async mode: return immediately after saving file, process in background
         self.standalone_async = bool(_get_nested(config, ['processing', 'standalone', 'async'], False))
 

@@ -715,7 +715,7 @@ processing:
     enabled: true
     command: "uv run run_summarization.py --git"
     working_directory: "."  # relative to processor repo, or absolute
-    timeout_seconds: 300
+    timeout_seconds: 600
 ```
 
 **Additional config options (both modes):**
