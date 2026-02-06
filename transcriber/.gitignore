@@ -1,0 +1,5 @@
+# Compiled Swift binary — rebuild with: make build
+mic_active
+
+__pycache__/
+*.pyc

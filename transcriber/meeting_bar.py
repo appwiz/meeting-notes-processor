@@ -5,7 +5,6 @@
 #     "rumps>=0.4.0",
 #     "requests>=2.31.0",
 #     "sounddevice>=0.5.0",
-#     "pyobjc-framework-Quartz>=10.0",
 # ]
 # ///
 """
@@ -15,13 +14,18 @@ Sits in the menu bar showing recording state. Detects Zoom/Teams meetings
 and automatically starts/stops recording via the VBAN → pilot pipeline.
 
 States:
-  ⏸  Idle (black mic icon)
-  🔴 Recording (red dot)
-  ⚠️  Error (warning icon)
+  🎙  Idle
+  🔴 Recording
+  ⚠️  Error
 
 Meeting detection:
   - Zoom: checks for CptHost subprocess (reliable in-meeting indicator)
-  - Teams: checks window titles for "Meeting" / "Call" patterns
+  - Teams: two-tier detection because new Teams 2.x exposes no window
+    titles and AVCaptureDevice doesn't see its mic usage:
+    * Start: MSTeams process running + physical mic has active CoreAudio I/O
+      (via compiled mic_active helper)
+    * End: queries macOS audiomxd log for Teams audio session state, since
+      our own VBAN sender keeps the mic active during recording
 
 Usage:
   uv run meeting_bar.py
@@ -32,7 +36,6 @@ import logging
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -40,6 +43,7 @@ from pathlib import Path
 import requests
 import rumps
 import sounddevice as sd
+from PyObjCTools.AppHelper import callAfter
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -50,7 +54,6 @@ PILOT_HOST = os.getenv("PILOT_HOST", "pilot")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
 
-# Audio device preference order
 DEVICE_PREFERENCE = [
     "BlackHole 2ch",
     "ZoomAudioDevice",
@@ -60,10 +63,6 @@ DEVICE_PREFERENCE = [
 VBAN_SEND_SCRIPT = Path(__file__).parent / "vban" / "vban_send.py"
 PID_FILE = Path(os.getenv("MEETING_PID_FILE", "/tmp/meeting-vban-sender.pid"))
 LOG_FILE = Path(os.getenv("MEETING_LOG_FILE", "/tmp/meeting-vban-sender.log"))
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 
 LOG_PATH = Path("/tmp/meeting-bar.log")
 logging.basicConfig(
@@ -77,13 +76,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("meeting-bar")
 
-# ---------------------------------------------------------------------------
-# Icons (using emoji titles for simplicity — rumps supports these natively)
-# ---------------------------------------------------------------------------
-
 ICON_IDLE = "🎙"
 ICON_RECORDING = "🔴"
 ICON_ERROR = "⚠️"
+
+# Compiled Swift helper for CoreAudio mic detection (Teams 2.x)
+MIC_ACTIVE_BIN = Path(__file__).parent / "mic_active"
 
 # ---------------------------------------------------------------------------
 # Meeting Detection
@@ -91,68 +89,108 @@ ICON_ERROR = "⚠️"
 
 
 def detect_zoom_meeting() -> bool:
-    """Check if user is in a Zoom meeting by looking for CptHost process.
-
-    CptHost is Zoom's content sharing / meeting host subprocess that only
-    runs when actively in a meeting (not just when the app is open).
-    """
+    """Check for CptHost process (only runs during active Zoom meetings)."""
     try:
         result = subprocess.run(
-            ["pgrep", "-x", "CptHost"],
-            capture_output=True,
-            timeout=3,
+            ["pgrep", "-x", "CptHost"], capture_output=True, timeout=3,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
 
 
-def detect_teams_meeting() -> bool:
-    """Check if user is in a Teams meeting by inspecting window titles.
+def _physical_mic_active() -> bool:
+    """Check if any physical microphone has active CoreAudio I/O.
 
-    Uses Quartz CGWindowListCopyWindowInfo to find Teams windows with
-    meeting-related titles. Requires Screen Recording permission for
-    window title access (macOS will prompt on first use).
+    Calls the compiled mic_active helper (Swift/CoreAudio) which checks
+    kAudioDevicePropertyDeviceIsRunningSomewhere on physical input devices,
+    ignoring virtual devices (BlackHole, ZoomAudioDevice, Teams Audio, etc.).
+
+    AVCaptureDevice.isInUseByAnotherApplication() does NOT work for Teams 2.x
+    because Teams uses CoreAudio directly, not AVCaptureDevice.
+    """
+    if not MIC_ACTIVE_BIN.exists():
+        logger.warning(f"mic_active binary not found at {MIC_ACTIVE_BIN}")
+        return False
+    try:
+        result = subprocess.run(
+            [str(MIC_ACTIVE_BIN)], capture_output=True, text=True, timeout=3,
+        )
+        return result.stdout.strip() == "YES"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug(f"mic_active check failed: {e}")
+        return False
+
+
+def detect_teams_meeting() -> bool:
+    """Check if Teams is in an active call (for START detection).
+
+    New Teams (2.x) doesn't expose meeting titles via CGWindowListCopyWindowInfo
+    (all titles are empty) and maintains hundreds of UDP sockets even when idle.
+    AVCaptureDevice.isInUseByAnotherApplication() also misses Teams calls because
+    Teams uses CoreAudio directly.
+
+    Instead, we detect active calls by checking two conditions:
+      1. MSTeams process is running
+      2. A physical microphone has active CoreAudio I/O (via mic_active helper)
+
+    WARNING: This check is only reliable for START detection. Once our VBAN
+    sender is running, it keeps the mic active, so this always returns True.
+    For END detection while recording, use _teams_audio_session_active() instead.
     """
     try:
-        from Quartz import (
-            CGWindowListCopyWindowInfo,
-            kCGWindowListOptionOnScreenOnly,
-            kCGWindowListExcludeDesktopElements,
-            kCGNullWindowID,
+        # Check if MSTeams is running
+        result = subprocess.run(
+            ["pgrep", "-x", "MSTeams"], capture_output=True, timeout=3,
         )
+        if result.returncode != 0:
+            return False
+        # Check if a physical microphone has active I/O
+        return _physical_mic_active()
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
-        windows = CGWindowListCopyWindowInfo(
-            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-            kCGNullWindowID,
+
+def _teams_audio_session_active() -> bool:
+    """Check if Teams has an active audio session via macOS audiomxd logs.
+
+    This queries the system log for the most recent Teams audio recording state.
+    The audiomxd daemon reliably logs 'isRecording: true/false' whenever Teams
+    starts or stops an audio session (call join/leave).
+
+    This is the only reliable signal for Teams meeting END detection because:
+      - mic_active always returns YES while our VBAN sender is running
+      - UDP socket counts are noisy (170+ even when idle)
+      - Window titles are all empty in Teams 2.x
+      - AVCaptureDevice doesn't see Teams mic usage
+
+    Takes ~1.5s to run, acceptable for 5s polling interval.
+    """
+    try:
+        result = subprocess.run(
+            ["log", "show", "--last", "120s",
+             "--predicate", 'process == "audiomxd" AND eventMessage CONTAINS "MSTeams" AND eventMessage CONTAINS "isRecording"',
+             "--style", "compact"],
+            capture_output=True, text=True, timeout=10,
         )
-
-        meeting_patterns = ["meeting with", "call with", "| meeting", "| call"]
-
-        for w in windows or []:
-            owner = w.get("kCGWindowOwnerName", "") or ""
-            title = w.get("kCGWindowName", "") or ""
-
-            if "teams" not in owner.lower():
-                continue
-
-            title_lower = title.lower()
-            if any(pat in title_lower for pat in meeting_patterns):
+        # Find the last isRecording state
+        lines = result.stdout.strip().splitlines()
+        for line in reversed(lines):
+            if "isRecording: true" in line:
                 return True
-
-    except ImportError:
-        logger.warning("pyobjc-framework-Quartz not available — Teams detection disabled")
-    except Exception as e:
-        logger.debug(f"Teams detection error: {e}")
-
-    return False
+            if "isRecording: false" in line:
+                return False
+        # No log entries found — assume still active (conservative)
+        # This handles the case where the call has been going for >120s
+        # without an audio state change.
+        return True
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug(f"audiomxd log check failed: {e}")
+        return True  # Fail-open: assume still active
 
 
 def detect_meeting() -> str | None:
-    """Check if user is in any meeting.
-
-    Returns the meeting app name ("Zoom" / "Teams") or None.
-    """
+    """Returns "Zoom", "Teams", or None."""
     if detect_zoom_meeting():
         return "Zoom"
     if detect_teams_meeting():
@@ -161,56 +199,44 @@ def detect_meeting() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Audio Device Discovery (reused from meeting.py)
+# Audio Device Discovery
 # ---------------------------------------------------------------------------
 
 
 def find_best_device() -> tuple[str | None, str | None]:
-    """Find the best available audio input device."""
     devices = sd.query_devices()
-    available = {}
-    for d in devices:
-        if d["max_input_channels"] > 0:
-            available[d["name"]] = d
-
+    available = {d["name"]: d for d in devices if d["max_input_channels"] > 0}
     for pref in DEVICE_PREFERENCE:
         for name in available:
             if pref.lower() in name.lower():
                 quality = "full" if "blackhole" in name.lower() else "partial"
                 return name, quality
-
     return None, None
 
 
 def find_mic_device() -> str | None:
-    """Find the microphone for dual-input mixing."""
     devices = sd.query_devices()
     default_idx = sd.default.device[0]
-
     if default_idx is not None and default_idx >= 0:
-        default_dev = devices[default_idx]
-        name = default_dev["name"].lower()
-        if default_dev["max_input_channels"] > 0 and not any(
-            skip in name for skip in ["blackhole", "zoom", "teams"]
+        d = devices[default_idx]
+        if d["max_input_channels"] > 0 and not any(
+            s in d["name"].lower() for s in ["blackhole", "zoom", "teams"]
         ):
-            return default_dev["name"]
-
+            return d["name"]
     for d in devices:
-        if d["max_input_channels"] > 0:
-            name = d["name"].lower()
-            if not any(skip in name for skip in ["blackhole", "zoom", "teams"]):
-                return d["name"]
-
+        if d["max_input_channels"] > 0 and not any(
+            s in d["name"].lower() for s in ["blackhole", "zoom", "teams"]
+        ):
+            return d["name"]
     return None
 
 
 # ---------------------------------------------------------------------------
-# VBAN Sender Management (reused from meeting.py)
+# VBAN Sender Management
 # ---------------------------------------------------------------------------
 
 
 def _sender_running() -> int | None:
-    """Check if VBAN sender is running. Returns PID or None."""
     if not PID_FILE.exists():
         return None
     try:
@@ -223,29 +249,15 @@ def _sender_running() -> int | None:
 
 
 def start_sender(device: str, mic: str | None = None) -> int:
-    """Start the VBAN sender in background. Returns PID."""
     existing = _sender_running()
     if existing:
         logger.info(f"VBAN sender already running (PID {existing})")
         return existing
-
-    cmd = [
-        "uv", "run", str(VBAN_SEND_SCRIPT),
-        "-d", device,
-        "-t", PILOT_HOST,
-        "-p", str(VBAN_PORT),
-    ]
+    cmd = ["uv", "run", str(VBAN_SEND_SCRIPT), "-d", device, "-t", PILOT_HOST, "-p", str(VBAN_PORT)]
     if mic:
         cmd.extend(["--mic", mic])
-
     log_fh = open(LOG_FILE, "w")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-
+    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, start_new_session=True)
     PID_FILE.write_text(str(proc.pid))
     mode = f"mixed ({device} + {mic})" if mic else device
     logger.info(f"VBAN sender started (PID {proc.pid}) → {mode}")
@@ -253,7 +265,6 @@ def start_sender(device: str, mic: str | None = None) -> int:
 
 
 def stop_sender():
-    """Stop the VBAN sender."""
     pid = _sender_running()
     if pid:
         try:
@@ -268,8 +279,6 @@ def stop_sender():
             pass
         PID_FILE.unlink(missing_ok=True)
         logger.info(f"VBAN sender stopped (PID {pid})")
-    else:
-        logger.info("No VBAN sender running")
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +288,7 @@ def stop_sender():
 
 def transcriber_status() -> dict | None:
     try:
-        r = requests.get(f"{TRANSCRIBER_URL}/status", timeout=5)
-        return r.json()
+        return requests.get(f"{TRANSCRIBER_URL}/status", timeout=5).json()
     except requests.RequestException as e:
         logger.error(f"Cannot reach transcriber: {e}")
         return None
@@ -288,11 +296,7 @@ def transcriber_status() -> dict | None:
 
 def transcriber_start(title: str) -> dict | None:
     try:
-        r = requests.post(
-            f"{TRANSCRIBER_URL}/start",
-            json={"title": title},
-            timeout=10,
-        )
+        r = requests.post(f"{TRANSCRIBER_URL}/start", json={"title": title}, timeout=10)
         if r.status_code == 409:
             logger.warning(f"Already recording: {r.json().get('detail', '')}")
             return r.json()
@@ -307,7 +311,6 @@ def transcriber_stop() -> dict | None:
     try:
         r = requests.post(f"{TRANSCRIBER_URL}/stop", timeout=10)
         if r.status_code == 404:
-            logger.warning("No active recording to stop")
             return None
         r.raise_for_status()
         return r.json()
@@ -317,123 +320,124 @@ def transcriber_stop() -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# State Machine
-# ---------------------------------------------------------------------------
-
-
-class RecordingState:
-    """Track the current state of meeting detection and recording."""
-
-    IDLE = "idle"
-    RECORDING = "recording"
-    ERROR = "error"
-
-    def __init__(self):
-        self.state = self.IDLE
-        self.meeting_title: str | None = None
-        self.meeting_app: str | None = None  # "Zoom", "Teams", or "Manual"
-        self.started_at: datetime.datetime | None = None
-        self.auto_detected: bool = False
-
-    def start(self, title: str, app: str, auto: bool = False):
-        self.state = self.RECORDING
-        self.meeting_title = title
-        self.meeting_app = app
-        self.started_at = datetime.datetime.now()
-        self.auto_detected = auto
-
-    def stop(self):
-        self.state = self.IDLE
-        self.meeting_title = None
-        self.meeting_app = None
-        self.started_at = None
-        self.auto_detected = False
-
-    def error(self):
-        self.state = self.ERROR
-
-    @property
-    def duration(self) -> str:
-        if not self.started_at:
-            return "0:00"
-        delta = datetime.datetime.now() - self.started_at
-        minutes, seconds = divmod(int(delta.total_seconds()), 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes}:{seconds:02d}"
-
-
-# ---------------------------------------------------------------------------
 # Menu Bar App
+#
+# THREADING MODEL:
+#   - Main thread: NSApplication run loop. All Cocoa UI access here only.
+#   - Poll thread: network I/O + meeting detection. Sets Python-only flags.
+#   - Recording threads: short-lived start/stop. Sets Python-only flags.
+#
+# RULE: Background threads NEVER touch Cocoa objects (no set_callback,
+# no .title=, no rumps.alert). They only set Python variables under _lock.
+# The main thread reads those variables when the user opens the menu.
 # ---------------------------------------------------------------------------
 
 
 class MeetingBarApp(rumps.App):
     def __init__(self):
-        super().__init__(
-            name="Meeting Bar",
-            title=ICON_IDLE,
-            quit_button=None,  # We'll add our own quit button
-        )
-        self.state = RecordingState()
-        self._detection_enabled = True
+        super().__init__(name="Meeting Bar", title=ICON_IDLE, quit_button=None)
+
         self._lock = threading.Lock()
+        self._recording = False
+        self._recording_title: str | None = None
+        self._recording_app: str | None = None
+        self._recording_auto: bool = False
+        self._started_at: datetime.datetime | None = None
+        self._detection_enabled = True
+        self._busy = False  # True while start/stop in progress
+        self._suppress_auto = False  # True after manual stop of auto-started recording
+        self._pilot_text = "Pilot: checking…"
 
-        # Pending UI updates from background threads
-        self._pending_pilot_text: str | None = None
-        self._pending_title_icon: str | None = None
-        self._pending_status_text: str | None = None
-        self._pending_start_enabled: bool | None = None
-        self._pending_stop_enabled: bool | None = None
-        self._pending_notification: tuple[str, str, str] | None = None
-        self._error_clear_at: float | None = None
-
-        # Menu items
-        self.status_item = rumps.MenuItem("Status: Idle", callback=None)
-        self.status_item.set_callback(None)
-
-        self.start_item = rumps.MenuItem("Start Recording…", callback=self.on_start)
-        self.stop_item = rumps.MenuItem("Stop Recording", callback=self.on_stop)
-        self.stop_item.set_callback(None)  # Disabled initially
-
-        self.auto_detect_item = rumps.MenuItem(
-            "Auto-Detect Meetings",
-            callback=self.on_toggle_detection,
-        )
-        self.auto_detect_item.state = 1  # Checked
-
-        self.pilot_status_item = rumps.MenuItem("Pilot: checking…", callback=None)
-        self.pilot_status_item.set_callback(None)
-
-        self.log_item = rumps.MenuItem("View Log…", callback=self.on_view_log)
-
-        self.quit_item = rumps.MenuItem("Quit", callback=self.on_quit)
-
+        # Menu — all items always have callbacks via @rumps.clicked.
+        # Keep refs so we can update visibility via callAfter.
+        self._status_item = rumps.MenuItem("Status: Idle")
+        self._start_item = rumps.MenuItem("Start Recording")
+        self._stop_item = rumps.MenuItem("Stop Recording")
+        self._pilot_item = rumps.MenuItem("Pilot: checking…")
         self.menu = [
-            self.status_item,
-            None,  # separator
-            self.start_item,
-            self.stop_item,
-            None,  # separator
-            self.auto_detect_item,
-            self.pilot_status_item,
-            self.log_item,
-            None,  # separator
-            self.quit_item,
+            self._status_item,
+            None,
+            self._start_item,
+            self._stop_item,
+            None,
+            rumps.MenuItem("Auto-Detect Meetings"),
+            self._pilot_item,
+            rumps.MenuItem("View Log…"),
+            None,
+            rumps.MenuItem("Quit Meeting Bar"),
         ]
+        self.menu["Auto-Detect Meetings"].state = 1
 
-        # Start background polling thread (avoids broken @rumps.timer on Python 3.14)
-        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._poll_thread.start()
+        # Initial UI state: hide Stop Recording
+        self._stop_item.hidden = True
+
+        # Start background polling
+        threading.Thread(target=self._poll_loop, daemon=True).start()
 
     # -------------------------------------------------------------------
-    # Background polling loop
+    # Helpers (main thread only)
+    # -------------------------------------------------------------------
+
+    @property
+    def _duration(self) -> str:
+        if not self._started_at:
+            return "0:00"
+        delta = datetime.datetime.now() - self._started_at
+        m, s = divmod(int(delta.total_seconds()), 60)
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    # -------------------------------------------------------------------
+    # Main-thread UI sync via callAfter
+    # -------------------------------------------------------------------
+
+    def _schedule_ui_update(self):
+        """Schedule a UI state sync on the main thread."""
+        try:
+            callAfter(self._apply_ui_state)
+        except Exception as e:
+            logger.debug(f"callAfter UI update failed: {e}")
+
+    def _apply_ui_state(self):
+        """Apply current state to all UI elements. Runs on main thread."""
+        try:
+            with self._lock:
+                recording = self._recording
+                busy = self._busy
+                rec_title = self._recording_title
+                pilot = self._pilot_text
+
+            # Icon
+            if recording:
+                self.title = ICON_RECORDING
+            elif busy:
+                self.title = "⏳"
+            else:
+                self.title = ICON_IDLE
+
+            # Status text
+            if recording:
+                self._status_item.title = f"Recording: {rec_title} ({self._duration})"
+            elif busy:
+                self._status_item.title = "Starting…"
+            else:
+                self._status_item.title = "Status: Idle"
+
+            # Show/hide Start and Stop mutually exclusively
+            self._start_item.hidden = recording or busy
+            self._stop_item.hidden = not recording
+
+            # Pilot status
+            self._pilot_item.title = pilot
+        except Exception as e:
+            logger.error(f"_apply_ui_state error: {e}", exc_info=True)
+
+    # -------------------------------------------------------------------
+    # Background polling
     # -------------------------------------------------------------------
 
     def _poll_loop(self):
-        """Background thread that polls every POLL_INTERVAL seconds."""
-        time.sleep(2)  # Let the app finish starting
+        time.sleep(2)
         logger.info("Detection loop active")
         while True:
             try:
@@ -442,269 +446,208 @@ class MeetingBarApp(rumps.App):
                 logger.error(f"Poll error: {e}", exc_info=True)
             time.sleep(POLL_INTERVAL)
 
-    def _sync_ui(self):
-        """Apply pending UI updates. Called from _poll_work in background thread.
-        
-        rumps property setters (title, etc.) are thin wrappers around Cocoa
-        properties. Direct access from a background thread is technically
-        not ideal but works reliably for simple property mutations in rumps.
-        """
-        with self._lock:
-            if self._pending_pilot_text is not None:
-                self.pilot_status_item.title = self._pending_pilot_text
-                self._pending_pilot_text = None
-
-            if self._pending_title_icon is not None:
-                self.title = self._pending_title_icon
-                self._pending_title_icon = None
-
-            if self._pending_status_text is not None:
-                self.status_item.title = self._pending_status_text
-                self._pending_status_text = None
-
-            if self._pending_start_enabled is not None:
-                if self._pending_start_enabled:
-                    self.start_item.set_callback(self.on_start)
-                else:
-                    self.start_item.set_callback(None)
-                self._pending_start_enabled = None
-
-            if self._pending_stop_enabled is not None:
-                if self._pending_stop_enabled:
-                    self.stop_item.set_callback(self.on_stop)
-                else:
-                    self.stop_item.set_callback(None)
-                self._pending_stop_enabled = None
-
-            # Notifications must be on main thread — defer to next user interaction
-            # rumps.notification from background thread generally works on macOS
-            if self._pending_notification is not None:
-                ntf_title, ntf_subtitle, ntf_message = self._pending_notification
-                self._pending_notification = None
-                try:
-                    rumps.notification(title=ntf_title, subtitle=ntf_subtitle, message=ntf_message)
-                except Exception:
-                    logger.debug("Notification delivery failed (non-critical)")
-
-            # Clear error state after timeout
-            if self._error_clear_at and time.time() >= self._error_clear_at:
-                self._error_clear_at = None
-                if self.state.state == RecordingState.IDLE:
-                    self.title = ICON_IDLE
-                    self.status_item.title = "Status: Idle"
-                    self.start_item.set_callback(self.on_start)
-                    self.stop_item.set_callback(None)
-
     def _poll_work(self):
-        """Background work for polling — runs in the poll thread."""
-        # Update pilot status
+        # Pilot status (network I/O)
         status = transcriber_status()
-        if status:
-            pilot_text = "Pilot: connected"
-            if status.get("recording"):
-                rec = status["recording"]
-                pilot_text += f" — recording '{rec.get('title', '?')}'"
-        else:
-            pilot_text = "Pilot: unreachable"
+        pilot_text = "Pilot: connected" if status else "Pilot: unreachable"
+        if status and status.get("recording"):
+            pilot_text += f" — rec '{status['recording'].get('title', '?')}'"
 
         with self._lock:
-            self._pending_pilot_text = pilot_text
+            self._pilot_text = pilot_text
 
-        # Apply all pending UI updates
-        self._sync_ui()
+        # Schedule full UI update on main thread
+        self._schedule_ui_update()
 
         # Meeting detection
-        if not self._detection_enabled:
+        if not self._detection_enabled or self._busy:
             return
-
-        with self._lock:
-            current_state = self.state.state
-            was_auto = self.state.auto_detected
 
         meeting_app = detect_meeting()
 
-        if current_state == RecordingState.IDLE and meeting_app:
-            # Meeting detected — auto-start
-            logger.info(f"Meeting detected: {meeting_app}")
-            self._auto_start(meeting_app)
+        with self._lock:
+            is_recording = self._recording
+            is_auto = self._recording_auto
+            rec_app = self._recording_app
 
-        elif current_state == RecordingState.RECORDING and was_auto and not meeting_app:
-            # Meeting ended — auto-stop
-            logger.info(f"Meeting ended (was: {self.state.meeting_app})")
-            self._stop_recording()
+        if not is_recording and meeting_app:
+            if self._suppress_auto:
+                pass  # User manually stopped; wait for meeting to end
+            else:
+                logger.info(f"Meeting detected: {meeting_app}")
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                title = f"{meeting_app} Meeting {timestamp}"
+                threading.Thread(
+                    target=self._do_start, args=(title, meeting_app, True), daemon=True,
+                ).start()
+
+        elif is_recording and is_auto:
+            # End detection is app-specific because our VBAN sender keeps
+            # the physical mic active, making generic detect_meeting()
+            # unreliable (it would see "Teams" even during a Zoom recording).
+            if rec_app == "Zoom":
+                still_active = detect_zoom_meeting()
+            elif rec_app == "Teams":
+                still_active = _teams_audio_session_active()
+            else:
+                still_active = meeting_app is not None
+
+            if not still_active:
+                logger.info(f"Meeting ended (was: {rec_app})")
+                threading.Thread(target=self._do_stop, daemon=True).start()
+
+        elif not meeting_app and self._suppress_auto:
+            logger.info("Meeting ended, clearing auto-suppress")
+            self._suppress_auto = False
 
     # -------------------------------------------------------------------
-    # Recording control
+    # Recording pipeline (background threads)
     # -------------------------------------------------------------------
 
-    def _start_recording(self, title: str, app: str, auto: bool = False):
-        """Start the full recording pipeline. Call from background thread."""
+    def _do_start(self, title: str, app: str, auto: bool = False):
+        with self._lock:
+            if self._recording or self._busy:
+                return
+            self._busy = True
+
         try:
             logger.info(f"Starting recording: '{title}' ({app}, auto={auto})")
 
-            # Find audio device
             device_name, quality = find_best_device()
             if not device_name:
                 logger.error("No suitable audio device found")
-                self._set_error("No audio device")
-                return False
+                return
 
-            # Find mic for mixing
-            mic_name = None
-            if quality == "full":
-                mic_name = find_mic_device()
-
-            # Start VBAN sender
-            try:
-                start_sender(device_name, mic=mic_name)
-            except Exception as e:
-                logger.error(f"Failed to start VBAN sender: {e}")
-                self._set_error("VBAN sender failed")
-                return False
-
-            # Wait for VBAN to connect
+            mic_name = find_mic_device() if quality == "full" else None
+            start_sender(device_name, mic=mic_name)
             time.sleep(3)
 
-            # Start recording on pilot
             result = transcriber_start(title)
             if not result:
                 logger.error("Failed to start recording on pilot")
                 stop_sender()
-                self._set_error("Pilot start failed")
-                return False
+                return
 
-            # Update state and queue UI update
             with self._lock:
-                self.state.start(title, app, auto=auto)
-                self._pending_title_icon = ICON_RECORDING
-                self._pending_status_text = f"Recording: {title}"
-                self._pending_start_enabled = False
-                self._pending_stop_enabled = True
+                self._recording = True
+                self._recording_title = title
+                self._recording_app = app
+                self._recording_auto = auto
+                self._started_at = datetime.datetime.now()
 
+            self._schedule_ui_update()
             logger.info(f"Recording started: '{title}'")
-            return True
 
         except Exception as e:
-            logger.error(f"Recording start failed: {e}", exc_info=True)
-            self._set_error("Start failed")
-            return False
+            logger.error(f"Start failed: {e}", exc_info=True)
+        finally:
+            with self._lock:
+                self._busy = False
+            self._schedule_ui_update()
 
-    def _stop_recording(self):
-        """Stop the full recording pipeline. Call from background thread."""
+    def _do_stop(self):
+        with self._lock:
+            if not self._recording:
+                return
+            self._busy = True
+
         try:
             logger.info("Stopping recording")
-
             result = transcriber_stop()
             stop_sender()
 
             with self._lock:
-                title = self.state.meeting_title
-                duration = self.state.duration
-                self.state.stop()
+                title = self._recording_title
+                duration = self._duration
+                self._recording = False
+                self._recording_title = None
+                self._recording_app = None
+                self._recording_auto = False
+                self._started_at = None
 
-                self._pending_title_icon = ICON_IDLE
-                self._pending_status_text = "Status: Idle"
-                self._pending_start_enabled = True
-                self._pending_stop_enabled = False
-
+            self._schedule_ui_update()
             if result:
                 logger.info(f"Recording stopped: '{title}' ({duration})")
-                with self._lock:
-                    self._pending_notification = (
-                        "Recording Stopped",
-                        title or "Meeting",
-                        f"Duration: {duration}. Transcription queued.",
-                    )
             else:
-                logger.warning("Recording stop — no active recording on pilot")
+                logger.warning("No active recording on pilot")
 
         except Exception as e:
-            logger.error(f"Recording stop failed: {e}", exc_info=True)
-            # Force back to idle state
+            logger.error(f"Stop failed: {e}", exc_info=True)
             with self._lock:
-                self.state.stop()
-                self._pending_title_icon = ICON_IDLE
-                self._pending_status_text = "Status: Idle"
-                self._pending_start_enabled = True
-                self._pending_stop_enabled = False
-
-    def _auto_start(self, app: str):
-        """Auto-start recording for a detected meeting."""
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        title = f"{app} Meeting {timestamp}"
-        threading.Thread(
-            target=self._start_recording,
-            args=(title, app, True),
-            daemon=True,
-        ).start()
-
-    def _set_error(self, msg: str):
-        """Queue error state display. Clears after 10 seconds."""
-        with self._lock:
-            self._pending_title_icon = ICON_ERROR
-            self._pending_status_text = f"Error: {msg}"
-            self._pending_start_enabled = True
-            self._pending_stop_enabled = False
-            self._error_clear_at = time.time() + 10
+                self._recording = False
+                self._recording_title = None
+        finally:
+            with self._lock:
+                self._busy = False
+            self._schedule_ui_update()
 
     # -------------------------------------------------------------------
-    # Callbacks
+    # Menu callbacks — @rumps.clicked runs on main thread
     # -------------------------------------------------------------------
 
-    def on_start(self, _sender):
-        """Manual start — prompt for meeting title."""
+    @rumps.clicked("Start Recording")
+    def on_start(self, sender):
+        # TODO: Sniff meeting title from calendar event when available
         try:
-            window = rumps.Window(
-                title="Start Recording",
-                message="Enter a meeting title:",
-                default_text="",
-                ok="Start",
-                cancel="Cancel",
-                dimensions=(320, 24),
-            )
-            response = window.run()
-            if response.clicked:
-                title = response.text.strip()
-                if not title:
-                    title = f"Meeting {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                logger.info(f"Manual start requested: '{title}'")
-                threading.Thread(
-                    target=self._start_recording,
-                    args=(title, "Manual", False),
-                    daemon=True,
-                ).start()
-            else:
-                logger.info("Start recording cancelled by user")
+            logger.info("on_start callback fired")
+            with self._lock:
+                if self._recording or self._busy:
+                    logger.info("Already recording or busy")
+                    return
+
+            title = f"Meeting at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            logger.info(f"Manual start: '{title}'")
+            self._schedule_ui_update()
+            threading.Thread(
+                target=self._do_start, args=(title, "Manual", False), daemon=True,
+            ).start()
         except Exception as e:
-            logger.error(f"Start dialog failed: {e}", exc_info=True)
+            logger.error(f"on_start error: {e}", exc_info=True)
 
-    def on_stop(self, _sender):
-        """Manual stop."""
-        with self._lock:
-            # Immediately disable stop button to prevent double-clicks
-            self._pending_stop_enabled = False
-        threading.Thread(target=self._stop_recording, daemon=True).start()
+    @rumps.clicked("Stop Recording")
+    def on_stop(self, sender):
+        try:
+            logger.info("on_stop callback fired")
+            with self._lock:
+                if not self._recording:
+                    rumps.notification("Meeting Bar", "Not Recording",
+                                      "No recording in progress.")
+                    return
+                was_auto = self._recording_auto
+            # If meeting is still active, suppress auto-restart
+            if was_auto and detect_meeting():
+                self._suppress_auto = True
+                logger.info("Suppressing auto-restart until meeting ends")
+            threading.Thread(target=self._do_stop, daemon=True).start()
+        except Exception as e:
+            logger.error(f"on_stop error: {e}", exc_info=True)
 
+    @rumps.clicked("Auto-Detect Meetings")
     def on_toggle_detection(self, sender):
-        """Toggle auto-detection on/off."""
-        self._detection_enabled = not self._detection_enabled
-        sender.state = 1 if self._detection_enabled else 0
-        state = "enabled" if self._detection_enabled else "disabled"
-        logger.info(f"Auto-detection {state}")
+        try:
+            self._detection_enabled = not self._detection_enabled
+            sender.state = 1 if self._detection_enabled else 0
+            logger.info(f"Auto-detection {'enabled' if self._detection_enabled else 'disabled'}")
+        except Exception as e:
+            logger.error(f"on_toggle_detection error: {e}", exc_info=True)
 
-    def on_view_log(self, _sender):
-        """Open the log file in Console.app."""
-        subprocess.Popen(["open", "-a", "Console", str(LOG_PATH)])
+    @rumps.clicked("View Log…")
+    def on_view_log(self, sender):
+        try:
+            subprocess.Popen(["open", "-a", "Console", str(LOG_PATH)])
+        except Exception as e:
+            logger.error(f"on_view_log error: {e}", exc_info=True)
 
-    def on_quit(self, _sender):
-        """Clean shutdown."""
-        logger.info("Quit requested")
-        if self.state.state == RecordingState.RECORDING:
-            logger.info("Stopping recording before quit")
-            self._stop_recording()
-        logger.info("Meeting Bar exiting")
-        # rumps.quit_application() doesn't always work reliably,
-        # so force exit after cleanup
+    @rumps.clicked("Quit Meeting Bar")
+    def on_quit(self, sender):
+        try:
+            logger.info("Quit requested")
+            if self._recording:
+                logger.info("Stopping recording before quit")
+                self._do_stop()
+            logger.info("Meeting Bar exiting")
+        except Exception as e:
+            logger.error(f"on_quit error: {e}", exc_info=True)
         os._exit(0)
 
 
@@ -718,8 +661,8 @@ def main():
     logger.info(f"  Transcriber: {TRANSCRIBER_URL}")
     logger.info(f"  VBAN target: {PILOT_HOST}:{VBAN_PORT}")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
-    logger.info(f"  Log file: {LOG_PATH}")
-    logger.info("  Quit: use menu Quit item, or Ctrl-\\ from terminal")
+    logger.info(f"  Log: {LOG_PATH}")
+    logger.info("  Quit: use Quit menu item, or Ctrl-\\ from terminal")
 
     app = MeetingBarApp()
     app.run()

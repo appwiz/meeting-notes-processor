@@ -44,6 +44,7 @@ This guide covers both the **client** (your laptop) and the **server** (the tran
 | Item | Where | Purpose |
 |------|-------|---------|
 | Mac with Apple Silicon | Laptop | Audio capture and VBAN streaming |
+| Xcode Command Line Tools | Laptop | Required for building `mic_active` Swift helper (`xcode-select --install`) |
 | Mac Mini M1+ | Server ("pilot") | Whisper transcription with Metal GPU |
 | [Tailscale](https://tailscale.com/) | Both | Secure networking between machines |
 | [BlackHole 2ch](https://existential.audio/blackhole/) | Laptop | Virtual audio device for routing |
@@ -193,6 +194,15 @@ cd transcriber && make logs
 
 Once setup is complete, you have two options:
 
+### First-Time: Build Local Helpers
+
+Before first use, compile the `mic_active` Swift binary (needed for Teams detection):
+
+```bash
+cd transcriber
+make build
+```
+
 ### Option A: Menu Bar App (Recommended)
 
 ```bash
@@ -213,7 +223,15 @@ Features:
 
 The app detects meetings by:
 - **Zoom**: Checks for `CptHost` subprocess (only present during active meetings)
-- **Teams**: Inspects window titles for "Meeting" / "Call" patterns via macOS Quartz API
+- **Teams**: Two-tier detection (Teams 2.x exposes no window titles and AVCaptureDevice doesn't see its mic usage):
+  - *Start*: MSTeams process running + physical mic active via `mic_active` compiled Swift helper (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on physical input devices)
+  - *End*: Queries macOS `audiomxd` system log for Teams audio session state (`isRecording: true/false`), since our own VBAN sender keeps the physical mic active during recording
+
+**First-time setup**: Build the `mic_active` helper before running:
+```bash
+cd transcriber
+make build
+```
 
 **Tip**: To run on login, add `uv run meeting_bar.py` to your login items, or create a launchd plist.
 
@@ -261,6 +279,9 @@ All server management happens from your laptop via `make`:
 
 ```bash
 cd transcriber
+
+# Local build
+make build           # Compile mic_active Swift binary (Teams detection)
 
 # Daily operations
 make status          # Transcriber health check
@@ -361,6 +382,7 @@ The laptop and pilot communicate over Tailscale. Ensure both machines are on the
 | File | Purpose |
 |------|---------|
 | `transcriber/meeting_bar.py` | Menu bar app (auto-detect + manual control) |
+| `transcriber/mic_active.swift` | CoreAudio physical mic detector (compiled via `make build`) |
 | `transcriber/meeting.py` | CLI command interface |
 | `transcriber/vban/vban_send.py` | VBAN audio sender |
 | `transcriber/Makefile` | Server management |

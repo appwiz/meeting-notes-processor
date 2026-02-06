@@ -1,6 +1,7 @@
-# Transcriber Appliance — remote management via SSH
+# Transcriber Appliance — local build + remote management via SSH
 #
-# All targets operate on the Mac Mini "pilot" over SSH.
+# Local targets: build (compiles mic_active Swift helper)
+# Remote targets: all others operate on the Mac Mini "pilot" over SSH
 # Usage: cd transcriber && make <target>
 
 REMOTE_HOST := edd@pilot
@@ -10,7 +11,17 @@ WHISPER_MODEL := large-v3
 SERVICE_LABEL := com.transcriber
 PLIST := $(SERVICE_LABEL).plist
 
-.PHONY: check provision deploy logs status ssh test model
+.PHONY: check provision deploy logs status ssh test model build
+
+# ---------------------------------------------------------------------------
+# Local Build
+# ---------------------------------------------------------------------------
+
+build: mic_active  ## Build all local binaries
+
+mic_active: mic_active.swift
+	swiftc -O -o $@ $<
+	@echo "Built mic_active (CoreAudio physical-mic detector)"
 
 # ---------------------------------------------------------------------------
 # Connectivity & Status
