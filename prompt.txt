@@ -15,6 +15,11 @@ lowercase letters, numbers, and hyphens. This will be used for the filename.
 
 Format this in org format, as used with org-mode in emacs.
 
+The transcript may contain [S] markers indicating a speaker change.
+Use these to help identify who is speaking — a new [S] means a
+different person is now talking. Use context and conversational flow
+to attribute statements to the correct participant.
+
 The user's name is Edd, which you may hear as Ed. His full name is
 Edd Wilder-James.
 

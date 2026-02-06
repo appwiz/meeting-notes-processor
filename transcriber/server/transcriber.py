@@ -47,7 +47,7 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 
 WHISPER_CLI = os.getenv("WHISPER_CLI", os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli"))
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", os.path.expanduser("~/whisper.cpp/models/ggml-medium.en.bin"))
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", os.path.expanduser("~/whisper.cpp/models/ggml-small.en-tdrz.bin"))
 RECORDINGS_DIR = Path(os.getenv("RECORDINGS_DIR", os.path.expanduser("~/transcriber/recordings")))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://nuctu:9876/webhook")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))  # UDP port for VBAN audio packets
@@ -347,40 +347,31 @@ _TS_PARSE_RE = re.compile(
     r"^\[(\d+):(\d+):(\d+\.\d+)\s*-->\s*(\d+):(\d+):(\d+\.\d+)\]\s*(.*)"
 )
 
-# Gap threshold in seconds — insert blank line when gap exceeds this
-_SPEAKER_GAP_SECONDS = 2.0
-
 
 def _strip_timestamps_with_gaps(transcript: str) -> str:
-    """Strip timestamp prefixes, inserting blank lines at significant gaps.
+    """Strip timestamp prefixes and convert [SPEAKER_TURN] markers to [S].
 
-    Converts timestamped whisper output into plain text while preserving
-    speaker-turn signals: when there is a gap of >2s between the end of
-    one segment and the start of the next, a blank line is inserted.
-    This tells the downstream LLM that a speaker change likely occurred.
+    Converts timestamped whisper output (with tinydiarize speaker turn
+    markers) into plain text. Each [SPEAKER_TURN] token is replaced with
+    an [S] marker that the downstream LLM uses to distinguish speakers.
     """
     lines = transcript.split("\n")
     result: list[str] = []
-    prev_end: float | None = None
 
     for line in lines:
         m = _TS_PARSE_RE.match(line)
         if not m:
             # Non-timestamped line (blank, etc.) — pass through
             result.append(line)
-            prev_end = None
             continue
 
-        h1, m1, s1, h2, m2, s2, text = m.groups()
-        start = int(h1) * 3600 + int(m1) * 60 + float(s1)
-        end = int(h2) * 3600 + int(m2) * 60 + float(s2)
+        _h1, _m1, _s1, _h2, _m2, _s2, text = m.groups()
+        text = text.strip()
 
-        # Insert blank line if there's a significant gap
-        if prev_end is not None and (start - prev_end) > _SPEAKER_GAP_SECONDS:
-            result.append("")
+        # Replace tinydiarize speaker turn markers
+        text = text.replace("[SPEAKER_TURN]", "[S]")
 
-        result.append(text.strip() if text.strip() else "")
-        prev_end = end
+        result.append(text if text else "")
 
     # Remove leading/trailing blank lines and collapse triple+ blanks
     cleaned = "\n".join(result).strip()
@@ -404,6 +395,7 @@ async def _transcribe(recording: Recording) -> None:
             "--print-progress",
             "--no-fallback",     # prevent temperature fallback (reduces hallucination)
             "--suppress-nst",    # suppress non-speech tokens
+            "--tinydiarize",     # insert [SPEAKER_TURN] tokens (requires tdrz model)
         ]
         logger.info(f"Starting transcription: {recording.title}")
 

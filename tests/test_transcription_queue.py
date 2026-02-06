@@ -456,26 +456,27 @@ class TestStripTimestampsWithGaps:
         result = transcriber._strip_timestamps_with_gaps(transcript)
         assert result == "Hello there.\nHow are you?"
 
-    def test_inserts_blank_line_at_gap(self):
-        """A gap >2s between segments inserts a blank line."""
+    def test_speaker_turn_becomes_marker(self):
+        """[SPEAKER_TURN] tokens are converted to [S]."""
         transcript = (
-            "[00:00:00.000 --> 00:00:05.000]   First speaker.\n"
-            "[00:00:08.000 --> 00:00:12.000]   Second speaker."
+            "[00:00:00.000 --> 00:00:05.000]   First speaker. [SPEAKER_TURN]\n"
+            "[00:00:05.000 --> 00:00:10.000]   Second speaker."
         )
         result = transcriber._strip_timestamps_with_gaps(transcript)
-        assert result == "First speaker.\n\nSecond speaker."
+        assert result == "First speaker. [S]\nSecond speaker."
 
-    def test_no_blank_line_for_small_gap(self):
-        """A gap <=2s does not insert a blank line."""
+    def test_multiple_speaker_turns(self):
+        """Multiple [SPEAKER_TURN] markers are each converted."""
         transcript = (
-            "[00:00:00.000 --> 00:00:05.000]   Same speaker.\n"
-            "[00:00:06.500 --> 00:00:10.000]   Still the same."
+            "[00:00:00.000 --> 00:00:05.000]   Hello. [SPEAKER_TURN]\n"
+            "[00:00:05.000 --> 00:00:10.000]   Hi there. [SPEAKER_TURN]\n"
+            "[00:00:10.000 --> 00:00:15.000]   How are you?"
         )
         result = transcriber._strip_timestamps_with_gaps(transcript)
-        assert result == "Same speaker.\nStill the same."
+        assert result == "Hello. [S]\nHi there. [S]\nHow are you?"
 
     def test_contiguous_segments(self):
-        """Back-to-back segments with no gap produce no blank lines."""
+        """Back-to-back segments produce no extra formatting."""
         transcript = (
             "[00:00:00.000 --> 00:00:03.000]   Line one.\n"
             "[00:00:03.000 --> 00:00:06.000]   Line two.\n"
@@ -483,17 +484,6 @@ class TestStripTimestampsWithGaps:
         )
         result = transcriber._strip_timestamps_with_gaps(transcript)
         assert result == "Line one.\nLine two.\nLine three."
-
-    def test_multiple_gaps(self):
-        """Multiple gaps in the transcript each produce a blank line."""
-        transcript = (
-            "[00:00:00.000 --> 00:00:05.000]   A.\n"
-            "[00:00:10.000 --> 00:00:15.000]   B.\n"
-            "[00:00:15.000 --> 00:00:20.000]   C.\n"
-            "[00:00:25.000 --> 00:00:30.000]   D."
-        )
-        result = transcriber._strip_timestamps_with_gaps(transcript)
-        assert result == "A.\n\nB.\nC.\n\nD."
 
     def test_empty_string(self):
         """Empty input returns empty output."""
@@ -506,27 +496,23 @@ class TestStripTimestampsWithGaps:
         assert result == transcript
 
     def test_realistic_conversation(self):
-        """Simulates a real conversation with typing pause and speaker turns."""
+        """Simulates a real tinydiarize conversation with speaker turns."""
         transcript = (
-            "[00:00:00.000 --> 00:00:05.000]   Hello.\n"
-            "[00:00:05.000 --> 00:00:10.000]   Do you mind if I take a minute?\n"
+            "[00:00:00.000 --> 00:00:05.000]   Hello. [SPEAKER_TURN]\n"
+            "[00:00:05.000 --> 00:00:10.000]   Do you mind if I take a minute? [SPEAKER_TURN]\n"
             "[00:00:10.000 --> 00:00:12.000]   Sure, go ahead.\n"
-            # 2-minute typing pause
-            "[00:02:12.000 --> 00:02:15.000]   OK I've sent it.\n"
+            "[00:02:12.000 --> 00:02:15.000]   OK I've sent it. [SPEAKER_TURN]\n"
             "[00:02:15.000 --> 00:02:20.000]   Great, so the big news is...\n"
-            # Brief speaker change
-            "[00:02:23.500 --> 00:02:25.000]   Right.\n"
+            "[00:02:23.500 --> 00:02:25.000]   Right. [SPEAKER_TURN]\n"
             "[00:02:25.000 --> 00:02:30.000]   Yeah, so basically..."
         )
         result = transcriber._strip_timestamps_with_gaps(transcript)
         lines = result.split("\n")
-        # Check structure: 3 lines, blank, 2 lines, blank, 2 lines
-        assert lines[0] == "Hello."
+        assert lines[0] == "Hello. [S]"
+        assert lines[1] == "Do you mind if I take a minute? [S]"
         assert lines[2] == "Sure, go ahead."
-        assert lines[3] == ""  # gap from typing pause
-        assert lines[4] == "OK I've sent it."
-        assert lines[6] == ""  # gap from speaker change
-        assert lines[7] == "Right."
+        assert lines[3] == "OK I've sent it. [S]"
+        assert lines[5] == "Right. [S]"
 
 
 if __name__ == "__main__":
