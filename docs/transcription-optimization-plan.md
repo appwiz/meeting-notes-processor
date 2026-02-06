@@ -1,7 +1,7 @@
 # Transcription Workflow Optimization Plan
 
 **Date:** January 27, 2026 (updated February 5, 2026)  
-**Status:** Active — Phases 1-2 complete; Phase 3 (audio routing) in progress. VBAN streaming verified end-to-end.
+**Status:** Phases 1-3 complete. Phase 4 (speaker turn detection) decided: timestamps-only approach deployed.
 
 ## Problem Statement
 
@@ -101,7 +101,7 @@ Offload recording and transcription entirely to a dedicated **M1 Mac Mini** conn
 | :--- | :--- | :--- |
 | **Compute** | **M1 Mac Mini** | Apple Neural Engine provides elite performance-per-watt for Whisper; near-silent, high-speed transcription |
 | **Network** | **Tailscale** | Secure mesh VPN — Mini is reachable via stable IP from anywhere (home, office, tethered) |
-| **Audio Routing** | **SoundSource** | Per-app audio hijacking: only meeting audio is captured, not system sounds or music |
+| **Audio Routing** | **BlackHole 2ch + dual-input mixing** | Virtual audio device captures app audio; `vban_send.py --mic` mixes local mic in software |
 | **Audio Transport** | **VBAN (UDP)** | Low-latency audio streaming optimized for real-time; avoids VPN-induced stutter |
 | **Transcription** | **whisper.cpp + CoreML** | C++ port of Whisper with CoreML support; ~10x real-time on M1 |
 
@@ -111,27 +111,28 @@ Offload recording and transcription entirely to a dedicated **M1 Mac Mini** conn
 ┌─────────────────────────┐         VBAN/UDP          ┌──────────────────────────┐
 │    LAPTOP (Director)    │ ◄──── Tailscale ────────► │   MAC MINI (Appliance)   │
 │                         │       Audio Stream         │                         │
-│  SoundSource routes     │                           │  FastAPI server          │
-│  Zoom/Teams audio ──────┼───────────────────────────┼─► ffmpeg records .wav    │
+│  meeting_bar.py detects │                           │  FastAPI server          │
+│  Zoom/Teams meetings    │                           │  (transcriber.py)        │
+│  vban_send.py streams   │                           │                         │
+│  audio (BlackHole +mic) ┼───────────────────────────┼─► VBAN capture → .wav   │
 │                         │   POST /start, /stop       │  whisper.cpp transcribes│
-│  Call detector ─────────┼───────────────────────────┼─► queues & processes     │
-│  (meeting start/end)    │                           │                         │
+│  Auto start/stop ───────┼───────────────────────────┼─► queues & processes     │
+│                         │                           │                         │
 │                         │      POST /webhook         │  Delivers transcript ───┼──► meetingnotesd.py
 │                         │ ◄─────────────────────────┼──with YAML front matter │
 └─────────────────────────┘                           └──────────────────────────┘
 ```
 
-**Laptop (The Director):**
-- Background process monitors for Zoom/Teams meeting windows
-- SoundSource redirects meeting app audio to VBAN stream aimed at Mini's Tailscale IP
-- On meeting start: `POST http://[mini-ip]:8000/start` with `meeting_start` timestamp
-- On meeting end: `POST http://[mini-ip]:8000/stop` with `meeting_end` timestamp
+**Laptop (meeting_bar.py — macOS menu bar app):**
+- Detects Zoom meetings (pgrep CptHost) and Teams meetings (CoreAudio mic + audiomxd logs)
+- Starts/stops VBAN audio stream and transcriber API automatically
+- Dual-input mixing: captures BlackHole 2ch (app audio) + physical mic via `vban_send.py --mic`
+- Menu bar icon shows recording state (🎙 idle, 🔴 recording, ⚠️ error)
 
-**Mac Mini (The Appliance):**
-- FastAPI server manages recording state
-- `ffmpeg` captures incoming VBAN stream to local `.wav`
+**Mac Mini (transcriber.py — FastAPI server):**
+- Captures VBAN audio directly to WAV (built-in VBANCapture class, no ffmpeg or separate receiver)
 - On stop: queues audio for whisper.cpp transcription (background task)
-- On completion: POSTs transcript with YAML front matter to `meetingnotesd.py` webhook
+- On completion: POSTs transcript with YAML front matter to `meetingnotesd.py` webhook on nuctu
 
 ### Implementation Phases
 
@@ -143,35 +144,32 @@ Offload recording and transcription entirely to a dedicated **M1 Mac Mini** conn
 - [x] Background task queue for non-blocking transcription
 - [x] launchd service for auto-start (com.transcriber)
 
-**Phase B: Audio Routing (Laptop)** — IN PROGRESS
+**Phase B: Audio Routing (Laptop)** ✅
 - [x] VBAN sender/receiver implemented in Python (sounddevice + numpy)
-- [x] VBAN receiver deployed as launchd service on pilot (com.vban-receiver)
-- [x] Audio verified arriving on pilot over Tailscale (100.120.243.128 → 100.111.132.123)
-- [ ] Configure SoundSource to route Zoom/Teams audio to VBAN sender
-- [ ] Test with actual Zoom/Teams meeting audio
+- [x] VBAN receiver absorbed into transcriber.py (VBANCapture class captures UDP directly to WAV — no separate receiver or ffmpeg needed)
+- [x] Obsolete `com.vban-receiver` service removed from pilot (`make clean-vban`)
+- [x] Audio routing via BlackHole 2ch + dual-input mixing in `vban_send.py --mic` (replaced SoundSource)
+- [x] Tested with actual Zoom and Teams meeting audio
 
-**Phase C: Call Detection & Automation (Laptop)**
-- [ ] Build background daemon that monitors for Zoom/Teams meeting windows
-- [ ] Auto-trigger `/start` on meeting detection, `/stop` on meeting end
-- [ ] Auto-start VBAN sender when meeting detected, stop when meeting ends
-- [ ] Menu bar indicator for recording status
-- [ ] Manual override (start/stop keyboard shortcut)
+**Phase C: Call Detection & Automation (Laptop)** ✅
+- [x] `meeting_bar.py` — macOS menu bar app using rumps, auto-detects Zoom and Teams meetings
+- [x] Auto-trigger `/start` on meeting detection, `/stop` on meeting end
+- [x] Auto-start VBAN sender when meeting detected, stop when meeting ends
+- [x] Menu bar icon shows recording state (🎙/🔴/⚠️)
+- [x] Manual start/stop via menu bar click
+- [x] `mic_active.swift` — CoreAudio helper for physical mic detection (Teams start)
+- [x] audiomxd log queries for Teams end detection (VBAN sender keeps mic active)
 
-**Phase D: Transcript Delivery**
-- [ ] Mini POSTs completed transcript to `meetingnotesd.py` webhook
-- [ ] Include YAML front matter with `meeting_start`, `meeting_end`, `recording_source: transcriber`
-- [ ] Existing pipeline handles the rest (calendar matching, summarization)
+**Phase D: Transcript Delivery** ✅
+- [x] Transcriber POSTs completed transcript to `meetingnotesd.py` webhook on nuctu
+- [x] Includes YAML front matter with `meeting_start`, `meeting_end`, `recording_source: transcriber`
+- [x] Existing pipeline handles the rest (calendar matching, summarization)
 
-### Speaker Turn Detection (Optional Enhancement)
+### Speaker Turn Detection — Decision Made
 
-whisper.cpp supports tinydiarize (`-tdrz` flag) for speaker turn markers:
+**Approach chosen: timestamps only.** Whisper timestamps are now enabled (removed `--no-timestamps` flag from transcriber.py). The LLM prompt (`prompt.txt`) conditionally uses timestamps to infer speaker turns when present, and falls back to conversational context for legacy transcripts without timestamps.
 
-```
-[00:00:00.000 --> 00:00:03.800]   Okay Houston, we've had a problem here. [SPEAKER_TURN]
-[00:00:03.800 --> 00:00:06.200]   This is Houston. Say again please. [SPEAKER_TURN]
-```
-
-The LLM + calendar context identifies WHO is speaking at each turn. Full pyannote diarization is likely overkill — turn markers + calendar = good enough.
+**Tinydiarize (`-tdrz`) was rejected:** Only has a `small.en` model available (accuracy downgrade from large-v3), and the project appears stalled. Pyannote is overkill. Calendar context + timestamps is sufficient for speaker identification.
 
 ### Success Criteria
 - **Zero laptop heat:** No CPU spike during transcription
@@ -201,8 +199,8 @@ The LLM + calendar context identifies WHO is speaking at each turn. Full pyannot
 | Option | Preserves Timing | Speaker Turns | CPU Impact | Complexity | Status |
 |--------|-----------------|---------------|------------|------------|--------|
 | 1. taskpolicy | ❌ | ❌ | ⚠️ Doesn't work | Low | ❌ Ruled out |
-| 2. Watch Folder | ✅ (with work) | ❌ | ✅ Deferred | Medium | Viable fallback |
-| 3. Transcriber Appliance | ✅ (native) | ✅ (optional) | ✅ Zero | Medium-High | ⭐ Recommended |
+| 2. Watch Folder | ✅ (with work) | ❌ | ✅ Deferred | Medium | Superseded by Option 3 |
+| 3. Transcriber Appliance | ✅ (native) | ✅ (timestamps) | ✅ Zero | Medium-High | ✅ Implemented |
 
 ---
 
@@ -227,23 +225,25 @@ Set up the M1 Mac Mini as a dedicated transcription server.
 - [x] Transcript delivery with YAML front matter to meetingnotesd.py
 - [x] launchd service (`com.transcriber`) auto-starts on boot
 
-### Phase 3: Laptop Audio Routing & Call Detection — IN PROGRESS
+### Phase 3: Laptop Audio Routing & Call Detection ✅ COMPLETE
 Automate the laptop side.
 
-- [x] VBAN audio streaming: `vban_send.py` (laptop) → `vban_recv.py` (pilot → BlackHole 2ch)
-- [x] VBAN receiver runs as launchd service (`com.vban-receiver`) on pilot
-- [x] End-to-end verified: laptop mic → VBAN → pilot → ffmpeg → whisper → webhook
-- [ ] SoundSource per-app audio routing (Zoom/Teams → VBAN sender)
-- [ ] Call detection daemon (Zoom/Teams process monitoring)
-- [ ] Menu bar UI with recording status and manual controls
-- [ ] Auto-trigger `/start` and `/stop` on the Mini
+- [x] VBAN audio streaming: `vban_send.py` (laptop) → transcriber.py VBAN capture (pilot)
+- [x] VBAN receiver absorbed into transcriber.py; obsolete `com.vban-receiver` removed
+- [x] End-to-end verified: laptop → VBAN → pilot → whisper → webhook
+- [x] BlackHole 2ch + dual-input mixing replaces SoundSource (app audio + mic in software)
+- [x] `meeting_bar.py` menu bar app: auto-detects Zoom/Teams, starts/stops recording
+- [x] `mic_active.swift` CoreAudio helper for Teams detection
+- [x] Auto-trigger `/start` and `/stop` on the Mini
 
-### Phase 4: Speaker Turn Detection (Optional Enhancement)
-May not be needed — calendar context handles speaker ID well.
+### Phase 4: Speaker Turn Detection ✅ DECIDED
+Timestamps-only approach chosen and deployed.
 
-- [ ] Test whisper.cpp `-tdrz` flag output quality
-- [ ] Verify LLM speaker identification with turn markers + calendar
-- [ ] Only implement if speaker confusion persists
+- [x] Evaluated tinydiarize — rejected (only small.en model, project stalled)
+- [x] Evaluated pyannote — rejected (overkill, heavy PyTorch dependency)
+- [x] Enabled whisper timestamps (removed `--no-timestamps` from transcriber.py)
+- [x] Updated `prompt.txt` to use timestamps for speaker turn inference when present
+- [x] Falls back gracefully for legacy transcripts without timestamps
 
 ---
 
@@ -256,16 +256,20 @@ All Transcriber appliance code lives in this repo under `transcriber/`. The Mac 
 - **Hostname:** `pilot` (reachable via `ssh edd@pilot`)
 - **Hardware:** M1 Mac Mini, 8 GB RAM, arm64
 - **OS:** macOS 26.2
-- **Current state:** Minimal — no Homebrew, no ffmpeg, system Python only. Sleep already disabled.
+- **Current state:** Fully provisioned — Homebrew, uv, whisper.cpp with Metal, large-v3 model. Sleep disabled.
 
 ### Repo Layout
 
 ```
 transcriber/
-├── Makefile                  # All remote ops via SSH (provision, deploy, logs, etc.)
+├── AGENTS.md                 # AI agent instructions for this subsystem
+├── Makefile                  # Local build + remote ops via SSH (provision, deploy, logs, etc.)
 ├── com.transcriber.plist     # launchd service definition (auto-start on boot)
+├── meeting_bar.py            # macOS menu bar app — auto meeting detection + recording
+├── meeting.py                # CLI for manual start/stop/status/devices
+├── mic_active.swift          # CoreAudio physical mic detector (Teams detection)
 ├── server/
-│   └── transcriber.py        # FastAPI server with /start, /stop, /status (PEP 723 inline deps)
+│   └── transcriber.py        # FastAPI server with built-in VBAN capture + whisper (PEP 723 inline deps)
 ├── setup/
 │   ├── 01-homebrew.sh        # Install Homebrew (idempotent)
 │   ├── 02-dependencies.sh    # brew install ffmpeg blackhole-2ch; install uv
@@ -273,8 +277,8 @@ transcriber/
 │   └── 04-service.sh         # Install launchd plist, start service
 └── vban/
     ├── vban_send.py           # VBAN sender — runs on laptop, streams audio to pilot
-    ├── vban_recv.py           # VBAN receiver — runs on pilot, plays to BlackHole 2ch
-    └── com.vban-receiver.plist # launchd service for receiver on pilot
+    ├── vban_recv.py           # OBSOLETE — VBAN capture now built into transcriber.py
+    └── com.vban-receiver.plist # OBSOLETE — removed from pilot via make clean-vban
 ```
 
 ### Makefile Targets
@@ -283,18 +287,16 @@ All targets run from the laptop against pilot via SSH:
 
 | Target | Description |
 |--------|-------------|
+| `make build` | Compile `mic_active.swift` → `mic_active` binary (local) |
 | `make check` | Verify SSH connectivity, show pilot hardware/software status |
 | `make provision` | Run all `setup/*.sh` scripts in order (idempotent, safe to re-run) |
 | `make deploy` | `rsync` server code to `~/transcriber/` on pilot, restart launchd service |
-| `make deploy-vban` | Deploy VBAN receiver to pilot, install launchd service, restart |
 | `make logs` | Tail the transcriber service logs on pilot |
-| `make logs-vban` | Tail the VBAN receiver logs on pilot |
 | `make status` | Show service status + any active recordings |
-| `make status-vban` | Check if VBAN receiver is running on pilot |
-| `make stop-vban` | Stop the VBAN receiver on pilot |
 | `make ssh` | Open an interactive shell on pilot |
 | `make test` | Send a test audio clip and verify the full round-trip |
 | `make model` | Download/update the whisper.cpp model on pilot |
+| `make clean-vban` | Remove obsolete VBAN receiver service from pilot |
 
 ### Technology Choices
 
@@ -305,9 +307,11 @@ All targets run from the laptop against pilot via SSH:
 | **Provisioning** | Numbered shell scripts over SSH | Idempotent, simple, no Ansible dependency |
 | **Service manager** | launchd plist | Native macOS, auto-start on boot, log management |
 | **Deployment** | `rsync` + `launchctl restart` | Fast, no build step, atomic |
-| **Whisper model** | large-v3 + CoreML | Best accuracy; ~3-4x real-time is fine since transcription is async |
-| **Audio bridge** | BlackHole 2ch | Virtual audio device for VBAN → ffmpeg capture on pilot |
-| **Audio transport** | VBAN over UDP (Python) | Custom `vban_send.py` / `vban_recv.py` using `sounddevice` + `numpy`; ~256 samples/packet at 48kHz mono int16 |
+| **Whisper model** | large-v3 + Metal | Best accuracy; ~3-4x real-time is fine since transcription is async |
+| **Audio capture** | Built-in VBAN → WAV in transcriber.py | `VBANCapture` class captures UDP directly to WAV; no ffmpeg or separate receiver needed |
+| **Audio transport** | VBAN over UDP (Python) | Custom `vban_send.py` using `sounddevice` + `numpy`; ~256 samples/packet at 48kHz mono int16; supports dual-input mixing |
+| **Meeting detection** | `meeting_bar.py` (rumps) | macOS menu bar app; Zoom via pgrep, Teams via CoreAudio + audiomxd |
+| **Mic detection** | `mic_active.swift` | Compiled CoreAudio helper, filters virtual devices |
 
 ### Provisioning Flow
 
@@ -333,8 +337,8 @@ laptop                              pilot (Mac Mini)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/status` | GET | Health check: service status, active recordings, disk space |
-| `/start` | POST | Begin recording: spawns ffmpeg to capture VBAN audio; records `meeting_start` timestamp. Body: `{"title": "Meeting Name"}` |
-| `/stop` | POST | Stop recording: kills ffmpeg, queues audio for whisper.cpp transcription. Records `meeting_end` timestamp |
+| `/start` | POST | Begin recording: starts VBANCapture (UDP → WAV); records `meeting_start` timestamp. Body: `{"title": "Meeting Name"}` |
+| `/stop` | POST | Stop recording: stops VBAN capture, queues audio for whisper.cpp transcription. Records `meeting_end` timestamp |
 | `/recordings` | GET | List recent recordings and their processing status |
 
 On transcription completion, the server POSTs the result to `meetingnotesd.py`:
@@ -354,14 +358,14 @@ The YAML front matter is embedded in the transcript body. `meetingnotesd.py` sav
 |-----------|--------------|-------------|---------|
 | FastAPI server | `transcriber/server/` | `~/transcriber/` on pilot | pilot |
 | whisper.cpp + models | compiled on pilot via setup scripts | `~/whisper.cpp/` on pilot | pilot |
-| VBAN receiver | `transcriber/vban/vban_recv.py` | `~/transcriber/` on pilot | pilot |
 | VBAN sender | `transcriber/vban/vban_send.py` | stays on laptop | laptop |
+| Meeting bar app | `transcriber/meeting_bar.py` | stays on laptop | laptop |
+| Meeting CLI | `transcriber/meeting.py` | stays on laptop | laptop |
+| Mic detector | `transcriber/mic_active.swift` | compiled locally (`make build`) | laptop |
 | Setup scripts | `transcriber/setup/` | run via SSH, not deployed | pilot (via laptop) |
 | Makefile | `transcriber/Makefile` | stays on laptop | laptop |
 | Transcriber plist | `transcriber/com.transcriber.plist` | `~/Library/LaunchAgents/` on pilot | pilot |
-| VBAN receiver plist | `transcriber/vban/com.vban-receiver.plist` | `~/Library/LaunchAgents/` on pilot | pilot |
 | meetingnotesd.py | repo root | already running on nuctu | nuctu |
-| Call detector (Phase 3) | `transcriber/director/` (future) | laptop | laptop |
 
 ---
 
@@ -518,18 +522,20 @@ def webhook():
     # ... save to inbox
 ```
 
-**Investigation needed:**
-- [ ] Check MacWhisper webhook documentation for available fields
-- [ ] Test what MacWhisper actually sends in the POST body
-- [ ] Check if MacWhisper Pro has additional metadata options
+**Note:** MacWhisper is no longer the primary transcription source — the transcriber appliance handles recording and transcription. MacWhisper webhook support remains for backward compatibility but the investigation items below are no longer a priority.
 
-### Experiment Checklist
+~~**Investigation needed:**~~
+- ~~Check MacWhisper webhook documentation for available fields~~
+- ~~Test what MacWhisper actually sends in the POST body~~
+- ~~Check if MacWhisper Pro has additional metadata options~~
 
-- [ ] Check MacWhisper webhook payload for start time or duration
-- [ ] Prototype header parsing in run_summarization.py
-- [ ] Test calendar filtering with time overlap
-- [ ] Update prompt with time context
-- [ ] Measure improvement in calendar matching accuracy
+### ~~Experiment Checklist~~ (All implemented)
+
+- [x] ~~Check MacWhisper webhook payload~~ — Transcriber appliance is now primary source
+- [x] Header parsing implemented in run_summarization.py (`parse_transcript_header()`)
+- [x] Calendar filtering with time overlap implemented
+- [x] Prompt updated with time context (`build_calendar_aware_prompt()`)
+- [ ] Measure improvement in calendar matching accuracy (qualitative: working well in practice)
 
 ---
 
@@ -538,11 +544,11 @@ def webhook():
 - `taskpolicy` does not work for MacWhisper — tested and ruled out (Feb 2026)
 - MacWhisper is built on whisper.cpp (by Georgi Gerganov)
 - whisper.cpp supports Core ML for faster inference on Apple Silicon; M1 Mac Mini achieves ~10x real-time
-- whisper.cpp tinydiarize detects speaker turns but doesn't identify speakers
-- **Calendar context + LLM handles speaker identification well** — explicit diarization (pyannote) likely unnecessary
-- pyannote deferred — only pursue if speaker confusion persists despite calendar context + turn markers
-- YAML front matter parsing requires `pyyaml` dependency (add to inline script metadata)
-- Tailscale provides stable mesh networking; VBAN over cellular quality needs testing
-- M1 Mac Mini should be set to "Never Sleep" + HDMI dummy plug for headless ANE/GPU operation
-- SoundSource enables per-app audio routing without kernel extensions on modern macOS
-- BlackHole 2ch acts as virtual audio bridge on the Mini (VBAN → ffmpeg)
+- whisper.cpp tinydiarize (`-tdrz`) was evaluated and rejected — only `small.en` model available, project stalled
+- **Timestamps + calendar context + LLM handles speaker identification well** — explicit diarization (pyannote) unnecessary
+- Whisper timestamps now enabled on pilot (removed `--no-timestamps` flag); prompt.txt updated to use them
+- YAML front matter parsing uses `pyyaml` (in inline script metadata)
+- Tailscale provides stable mesh networking; VBAN works well over home network
+- M1 Mac Mini set to "Never Sleep" + HDMI dummy plug for headless operation
+- SoundSource was evaluated but replaced by BlackHole 2ch + `vban_send.py --mic` dual-input mixing
+- VBAN capture is now built directly into transcriber.py (VBANCapture class) — no ffmpeg or separate receiver needed

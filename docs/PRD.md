@@ -209,6 +209,12 @@ User selects which LLM to use via command-line argument or configuration, provid
 
 ## Phase 7: Calendar Integration
 
+### Status: MOSTLY COMPLETE
+
+Core calendar matching and enrichment is implemented and working in production. Calendar context is included in the single-pass LLM summarization prompt, with time-based and participant-based matching. Recent notes context provides disambiguation for same-day meetings. The `/calendar` webhook endpoint on `meetingnotesd.py` receives calendar.org updates.
+
+**Remaining:** Slug enrichment (renaming files with participant names), tests with example calendar data, README documentation.
+
 ### Overview
 
 Enhance meeting notes by cross-referencing with a `calendar.org` file in the data repository. Calendar data is passed to the LLM **at summarization time** (single-pass), allowing real-time triangulation of transcript speakers against calendar attendees. This corrects transcription errors (e.g., "Kim" → "Alex") and ensures accurate participant identification.
@@ -534,15 +540,16 @@ def enrich_with_calendar(notes_path, calendar_path, date_str):
 
 ### Implementation Tasks
 
-1. [ ] Add calendar parsing utility (org-mode basic parser)
-2. [ ] Create calendar candidate filtering by date
-3. [ ] Design and test LLM matching prompt
-4. [ ] Implement enrichment function
-5. [ ] Add `--calendar` / `--no-calendar` CLI flags
-6. [ ] Add `calendar:` configuration section
-7. [ ] Integrate into `process_transcript()` flow
-8. [ ] Add tests with example calendar data
-9. [ ] Document feature in README
+1. [x] Add calendar parsing utility (org-mode basic parser) — `parse_calendar_org()`
+2. [x] Create calendar candidate filtering by date — `time_overlaps()` + date filtering
+3. [x] Design and test LLM matching prompt — `build_calendar_aware_prompt()`, `build_calendar_prompt()`
+4. [x] Implement enrichment function — `enrich_with_calendar()`
+5. [x] Add `--calendar` / `--no-calendar` CLI flags
+6. [x] Integrate into `process_transcript()` flow — calendar matching is single-pass with summarization
+7. [x] Gather recent notes context for disambiguation — `gather_recent_notes_context()`
+8. [ ] Slug enrichment: rename files with participant names after calendar match
+9. [ ] Add tests with example calendar data
+10. [ ] Document calendar feature in README
 
 ### Open Questions
 
