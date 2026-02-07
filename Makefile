@@ -37,7 +37,7 @@ status:  ## Show service status on nuctu
 	ssh -t $(REMOTE_HOST) 'sudo systemctl status $(SERVICE) --no-pager'
 
 logs:  ## Tail service logs on nuctu
-	ssh -t $(REMOTE_HOST) 'sudo journalctl -u $(SERVICE) -f --no-pager'
+	ssh -t $(REMOTE_HOST) 'sudo journalctl -t $(SERVICE) -f --no-pager'
 
 ssh:  ## SSH to nuctu
 	@ssh $(REMOTE_HOST)
