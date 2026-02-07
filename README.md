@@ -666,6 +666,7 @@ Options:
   --model MODEL             Specific model name
   --prompt FILE             Custom prompt template
   --git                     Commit results to git
+  --debug                   Verbose output (stream copilot output, show commands)
 ```
 
 ### meetingnotesd.py
@@ -696,6 +697,11 @@ uv run send_transcript.py transcript.txt http://localhost:9876/webhook
 - Run `npm install` in the processor directory first
 - `npx` may prompt to install packages, which hangs when stdin is captured
 - Use `--debug` flag to stream output and see what's happening
+
+**Copilot runs but produces no output files**
+- When running non-interactively (`-p` mode), copilot requires `--allow-all-tools --allow-all-paths` to authorize tool usage
+- Without these flags, copilot silently denies tool calls with "Permission denied" and exits 0
+- The script handles this automatically, but if you're running copilot manually, include these flags
 
 **Wrong paths or "directory not found"**
 - For separated repos, use `--workspace ../my-meeting-notes` to point to your data repo

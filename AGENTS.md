@@ -100,13 +100,30 @@ Supports `--workspace` argument (or `WORKSPACE_DIR` env var as fallback):
 - If not specified: Uses current directory (same-repository mode)
 - If specified: Uses that path as data repository
 
+## Deployment
+
+The `Makefile` handles deployment to nuctu (the production server):
+
+```bash
+make deploy    # Push to git, pull on nuctu, restart service
+make status    # Show service status
+make logs      # Tail service logs (journalctl -f)
+make restart   # Restart service only
+make ssh       # SSH to nuctu
+```
+
+The service runs as a system-level systemd unit (`meetingnotes-webhook`) on nuctu.
+Restart requires sudo (will prompt for password via interactive SSH).
+
 ## Development Workflow
 
 1. Make changes to Python files
 2. Add inline script metadata for any new dependencies
 3. Test with `uv run <script>`
 4. For separated repos: Test with `uv run run_summarization.py --workspace ../meeting-notes`
-5. Commit and push changes
+5. Run tests: `uv run --with pytest --with pyyaml pytest tests/`
+6. Commit and push changes
+7. Deploy: `make deploy`
 
 ## GitHub Actions
 
@@ -128,14 +145,33 @@ Use `workflows-templates/process-transcripts-data-repo.yml` (copy to `.github/wo
 - `uv` handles virtual environments automatically
 - For separated repos, use `--workspace` argument for run_summarization.py
 
+## Copilot CLI (Critical)
+
+When invoking `copilot` in non-interactive/programmatic mode (`-p` flag), you **must** use
+`--allow-all-tools --allow-all-paths` to authorize all tool usage. Without these flags,
+copilot silently denies tool calls with "Permission denied" and exits 0 — producing no output.
+
+```bash
+copilot -p "<prompt>" --allow-all-tools --allow-all-paths --model claude-sonnet-4.5
+```
+
+Do NOT use the more restrictive `--allow-tool write` — it only authorizes file writes,
+but copilot also needs read, glob, and shell permissions.
+
 ## Project Structure
 
+- `Makefile` - Deployment targets for nuctu (deploy, status, logs, restart)
 - `docs/PRD.md` - Product Requirements Document with design decisions and rationale
 - `docs/MISC.md` - Miscellaneous notes and ideas
 - `service-configs/` - systemd and launchd configurations for running as a system service
-- `tests/` - Test suite (run with `uv run pytest`)
+- `tests/` - Test suite (run with `uv run --with pytest --with pyyaml pytest tests/`)
+- `skills/` - Copilot CLI skills (e.g., workiq-notes)
 
 ## Troubleshooting
 
 - Use `--debug` flag with run_summarization.py for verbose output when diagnosing issues
 - Exit codes: 0 = success, 1 = failures occurred, 2 = no files to process
+- Check nuctu logs: `make logs` or `ssh edd@nuctu 'sudo journalctl -t meetingnotes-webhook --since "1 hour ago" --no-pager'`
+- If copilot produces no output despite exit code 0, check that `--allow-all-tools --allow-all-paths` flags are present
+- Processing uses per-file timeouts (600s) and per-file git commits — one failure won't block others
+- The daemon deduplicates concurrent processing requests (skips if already processing)

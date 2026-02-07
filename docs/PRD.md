@@ -170,6 +170,12 @@ User selects which LLM to use via command-line argument or configuration, provid
 - ✅ Optionally run a local command hook when new data arrives
 - ✅ Renamed `webhook_daemon.py` to `meetingnotesd.py` to reflect broader responsibilities
 - ✅ Auto-clone data repo if working directory doesn't exist
+- ✅ Per-file git commits (one failure doesn't block others)
+- ✅ Per-file timeouts (600s) with select-based I/O streaming
+- ✅ Thread deduplication (daemon skips if already processing)
+- ✅ UUID-based temp filenames (prevents collisions with concurrent processing)
+- ✅ Progress logging includes transcript filename for traceability
+- ✅ Copilot CLI uses `--allow-all-tools --allow-all-paths` for non-interactive mode
 
 #### Phase 6: Enhancement (Future)
 - ⏳ Add duplicate detection
@@ -410,7 +416,7 @@ npx @github/copilot -p "
 Read calendar.org and identify meetings on [date].
 Read [notes.org] and determine which calendar entry matches.
 Update [notes.org] with calendar metadata.
-" --allow-tool read --allow-tool write
+" --allow-all-tools --allow-all-paths
 ```
 
 **Pros:**
