@@ -279,10 +279,13 @@ def detect_edge_teams_meeting() -> bool:
     the audiomxd system log for Edge helper audio sessions with active
     recording state — the same technique used for native Teams detection.
 
-    This works for both start and end detection since audiomxd reliably
-    logs 'isRecording: true/false' for Edge helper processes.
+    To reduce false positives (Edge registers PlayAndRecord sessions
+    transiently when Teams PWA accesses mic without being in a call),
+    we also require that a physical microphone has active CoreAudio I/O.
     """
-    return _audiomxd_session_active("Microsoft Edge")
+    if not _audiomxd_session_active("Microsoft Edge"):
+        return False
+    return _physical_mic_active()
 
 
 def detect_meeting() -> str | None:
