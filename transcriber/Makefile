@@ -11,7 +11,8 @@ WHISPER_MODEL := large-v3
 SERVICE_LABEL := com.transcriber
 PLIST := $(SERVICE_LABEL).plist
 
-.PHONY: check provision deploy logs status ssh test model build
+.PHONY: check provision deploy logs status ssh test model build \
+       meeting-bar-install meeting-bar-restart meeting-bar-logs meeting-bar-status
 
 # ---------------------------------------------------------------------------
 # Local Build
@@ -22,6 +23,35 @@ build: mic_active  ## Build all local binaries
 mic_active: mic_active.swift
 	swiftc -O -o $@ $<
 	@echo "Built mic_active (CoreAudio physical-mic detector)"
+
+# ---------------------------------------------------------------------------
+# Meeting Bar (runs locally on this laptop as a launchd agent)
+# ---------------------------------------------------------------------------
+
+MEETING_BAR_LABEL := com.meeting-bar
+MEETING_BAR_PLIST := $(MEETING_BAR_LABEL).plist
+
+meeting-bar-install:  ## Install meeting_bar.py as a launchd agent
+	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@sleep 2
+	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar installed and running" || echo "WARNING: service not loaded"
+
+meeting-bar-restart:  ## Restart meeting_bar.py launchd agent
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
+	@sleep 1
+	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@sleep 2
+	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar restarted" || echo "WARNING: service not loaded"
+
+meeting-bar-logs:  ## Tail meeting_bar.py logs
+	tail -f ~/Library/Logs/meeting-bar.log
+
+meeting-bar-status:  ## Show meeting_bar.py service status
+	@launchctl list | grep $(MEETING_BAR_LABEL) || echo "meeting-bar: not loaded"
+	@echo "---"
+	@tail -5 ~/Library/Logs/meeting-bar.log 2>/dev/null || echo "No log file yet"
 
 # ---------------------------------------------------------------------------
 # Connectivity & Status

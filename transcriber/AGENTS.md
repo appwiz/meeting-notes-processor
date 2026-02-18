@@ -72,13 +72,25 @@ make logs     # tail -f the service log
 - `rsync -avz --delete --exclude='recordings/' server/ edd@pilot:~/transcriber/`
 - `launchctl bootout` + `launchctl bootstrap` to restart `com.transcriber`
 
-### Changing the menu bar app
+## Changing the menu bar app
 
-`meeting_bar.py` runs locally on the laptop. No deploy step—just restart it:
+`meeting_bar.py` runs locally on the laptop as a **launchd agent**. After
+editing, restart via:
 
 ```bash
-uv run meeting_bar.py
+cd transcriber
+make meeting-bar-restart
+make meeting-bar-logs       # verify healthy startup
 ```
+
+To install for the first time:
+```bash
+make meeting-bar-install
+```
+
+**IMPORTANT**: Do NOT run `meeting_bar.py` via `nohup` — the closed file
+descriptors cause `vban_send.py` subprocesses to crash with
+`OSError: Bad file descriptor`. Always use the launchd agent.
 
 ### Changing mic_active
 
@@ -209,6 +221,10 @@ sent to the transcriber, and logged.
 | Target | Where | What |
 |--------|-------|------|
 | `build` | local | Compile `mic_active.swift` → `mic_active` |
+| `meeting-bar-install` | local | Install `meeting_bar.py` as launchd agent |
+| `meeting-bar-restart` | local | Restart `meeting_bar.py` launchd agent |
+| `meeting-bar-logs` | local | `tail -f` the meeting-bar log |
+| `meeting-bar-status` | local | Show meeting-bar service status |
 | `deploy` | remote | rsync `server/` to pilot + restart service |
 | `check` | remote | Full health report (OS, brew, whisper, model, service) |
 | `status` | remote | `curl /status` on pilot |
@@ -221,6 +237,9 @@ sent to the transcriber, and logged.
 
 ## Common Pitfalls
 
+- **Running meeting_bar.py via nohup**: Causes `vban_send.py` subprocesses to
+  crash with `OSError: Bad file descriptor` because nohup closes stdout/stderr.
+  Always use the launchd agent (`make meeting-bar-install`).
 - **Editing pilot directly**: `make deploy` does `--delete`, so direct edits
   on pilot will be overwritten. Always edit in this repo.
 - **VBAN sender keeps mic alive**: This is why Teams end-detection uses
