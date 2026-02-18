@@ -168,8 +168,24 @@ Teams 2.x (new Electron) exposes no reliable window titles and
   mic active during recording. Instead queries macOS `audiomxd` system log for
   Teams audio session events.
 
-If you change detection logic, test both start and end transitions for both
-Zoom and Teams.
+### Teams PWA (Edge browser)
+
+When Teams runs as a PWA in Edge, native process detection (`pgrep MSTeams`)
+doesn't work. Instead, both start and end detection use `audiomxd` system logs
+directly — the same technique as native Teams end detection:
+
+- `audiomxd` logs `isRecording: true/false` for Edge helper processes
+  (`com.microsoft.edgemac.helper`) when a call starts/stops.
+- The detection function queries the last 120s of logs for
+  `"Microsoft Edge"` + `"isRecording"`.
+- This also works for Chrome if the PWA is ever moved there (change the app
+  name string to `"Google Chrome"`).
+
+The `detect_meeting()` function returns `"EdgeTeams"` for this case (distinct
+from `"Teams"` for the native app).
+
+If you change detection logic, test both start and end transitions for Zoom,
+Teams, and EdgeTeams.
 
 ## Threading Model (meeting_bar.py)
 

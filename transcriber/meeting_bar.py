@@ -20,12 +20,14 @@ States:
 
 Meeting detection:
   - Zoom: checks for CptHost subprocess (reliable in-meeting indicator)
-  - Teams: two-tier detection because new Teams 2.x exposes no window
+  - Teams (native app): two-tier detection because new Teams 2.x exposes no window
     titles and AVCaptureDevice doesn't see its mic usage:
     * Start: MSTeams process running + physical mic has active CoreAudio I/O
       (via compiled mic_active helper)
     * End: queries macOS audiomxd log for Teams audio session state, since
       our own VBAN sender keeps the mic active during recording
+  - Teams PWA (Edge): queries audiomxd log for Edge helper audio sessions
+    with isRecording state — works for both start and end detection
 
 Usage:
   uv run meeting_bar.py
@@ -228,25 +230,24 @@ def detect_teams_meeting() -> bool:
         return False
 
 
-def _teams_audio_session_active() -> bool:
-    """Check if Teams has an active audio session via macOS audiomxd logs.
+def _audiomxd_session_active(app_name: str) -> bool:
+    """Check if an app has an active audio session via macOS audiomxd logs.
 
-    This queries the system log for the most recent Teams audio recording state.
-    The audiomxd daemon reliably logs 'isRecording: true/false' whenever Teams
-    starts or stops an audio session (call join/leave).
+    Queries the system log for the most recent audio recording state for the
+    given app name. The audiomxd daemon logs 'isRecording: true/false' whenever
+    an app starts or stops an audio session (call join/leave).
 
-    This is the only reliable signal for Teams meeting END detection because:
+    This is the only reliable signal for meeting END detection because:
       - mic_active always returns YES while our VBAN sender is running
-      - UDP socket counts are noisy (170+ even when idle)
-      - Window titles are all empty in Teams 2.x
-      - AVCaptureDevice doesn't see Teams mic usage
+      - Window titles are unreliable for Teams 2.x and PWAs
+      - AVCaptureDevice doesn't see browser/Teams mic usage
 
     Takes ~1.5s to run, acceptable for 5s polling interval.
     """
     try:
         result = subprocess.run(
             ["log", "show", "--last", "120s",
-             "--predicate", 'process == "audiomxd" AND eventMessage CONTAINS "MSTeams" AND eventMessage CONTAINS "isRecording"',
+             "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}" AND eventMessage CONTAINS "isRecording"',
              "--style", "compact"],
             capture_output=True, text=True, timeout=10,
         )
@@ -266,12 +267,32 @@ def _teams_audio_session_active() -> bool:
         return True  # Fail-open: assume still active
 
 
+def _teams_audio_session_active() -> bool:
+    """Check if native Teams has an active audio session."""
+    return _audiomxd_session_active("MSTeams")
+
+
+def detect_edge_teams_meeting() -> bool:
+    """Check if Teams PWA (running in Edge) is in an active call.
+
+    The Teams PWA runs inside Microsoft Edge. We detect calls by querying
+    the audiomxd system log for Edge helper audio sessions with active
+    recording state — the same technique used for native Teams detection.
+
+    This works for both start and end detection since audiomxd reliably
+    logs 'isRecording: true/false' for Edge helper processes.
+    """
+    return _audiomxd_session_active("Microsoft Edge")
+
+
 def detect_meeting() -> str | None:
-    """Returns "Zoom", "Teams", or None."""
+    """Returns "Zoom", "Teams", "EdgeTeams", or None."""
     if detect_zoom_meeting():
         return "Zoom"
     if detect_teams_meeting():
         return "Teams"
+    if detect_edge_teams_meeting():
+        return "EdgeTeams"
     return None
 
 
@@ -571,6 +592,8 @@ class MeetingBarApp(rumps.App):
                 still_active = detect_zoom_meeting()
             elif rec_app == "Teams":
                 still_active = _teams_audio_session_active()
+            elif rec_app == "EdgeTeams":
+                still_active = _audiomxd_session_active("Microsoft Edge")
             else:
                 still_active = meeting_app is not None
 
