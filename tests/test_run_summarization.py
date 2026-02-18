@@ -246,9 +246,10 @@ class TestProcessInbox:
             os.makedirs(paths['transcripts'])
             os.makedirs(paths['notes'])
             
-            # Create test files
-            (Path(paths['inbox']) / 'test1.txt').write_text('transcript 1')
-            (Path(paths['inbox']) / 'test2.md').write_text('transcript 2')
+            # Create test files (body must be >= 200 chars to pass junk filter)
+            long_body = 'Discussion about project work and planning. ' * 10
+            (Path(paths['inbox']) / 'test1.txt').write_text(long_body)
+            (Path(paths['inbox']) / 'test2.md').write_text(long_body)
             (Path(paths['inbox']) / 'ignore.json').write_text('{}')  # Should be ignored
             
             with mock.patch.object(run_summarization, 'process_transcript') as mock_process:

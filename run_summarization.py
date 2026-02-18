@@ -239,6 +239,277 @@ def get_transcript_body(filepath: str) -> str:
     return content[3 + end_match.end():]
 
 
+# ============================================================================
+# Transcript Pre-Processing: Filter & Split
+# ============================================================================
+
+# Minimum transcript body length to be worth processing (characters)
+MIN_BODY_LENGTH = 200
+
+# Minimum recording duration to be worth processing (seconds)
+MIN_DURATION_SECONDS = 60
+
+# Minimum body length to consider checking for multi-meeting (characters)
+MULTI_MEETING_MIN_BODY = 5000
+
+# Minimum duration to consider checking for multi-meeting (seconds)
+MULTI_MEETING_MIN_DURATION = 3600  # 60 minutes
+
+
+def is_transcript_worth_processing(filepath: str) -> tuple[bool, str]:
+    """Check if a transcript has enough content to be worth summarizing.
+    
+    Returns (True, "") if worth processing, or (False, reason) if it should be skipped.
+    Uses simple heuristics — no LLM call needed.
+    """
+    body = get_transcript_body(filepath).strip()
+    
+    if len(body) < MIN_BODY_LENGTH:
+        return False, f"too short ({len(body)} chars, need {MIN_BODY_LENGTH})"
+    
+    metadata = parse_transcript_header(filepath)
+    if metadata.get('meeting_start') and metadata.get('meeting_end'):
+        try:
+            start = datetime.fromisoformat(metadata['meeting_start'])
+            end = datetime.fromisoformat(metadata['meeting_end'])
+            duration = (end - start).total_seconds()
+            if duration < MIN_DURATION_SECONDS:
+                return False, f"too brief ({int(duration)}s, need {MIN_DURATION_SECONDS}s)"
+        except (ValueError, TypeError):
+            pass  # Can't parse timestamps, skip duration check
+    
+    return True, ""
+
+
+def detect_multi_meeting(filepath: str, calendar_path: str = None,
+                         target: str = 'copilot', model: str = None,
+                         debug: bool = False) -> list[int] | None:
+    """Detect if a transcript contains multiple back-to-back meetings.
+    
+    Returns a list of character positions where splits should occur,
+    or None if the transcript appears to be a single meeting.
+    Only called for long transcripts where multi-meeting is plausible.
+    """
+    body = get_transcript_body(filepath).strip()
+    metadata = parse_transcript_header(filepath)
+    
+    # Check if transcript is long enough to plausibly contain multiple meetings
+    duration = None
+    if metadata.get('meeting_start') and metadata.get('meeting_end'):
+        try:
+            start = datetime.fromisoformat(metadata['meeting_start'])
+            end = datetime.fromisoformat(metadata['meeting_end'])
+            duration = (end - start).total_seconds()
+        except (ValueError, TypeError):
+            pass
+    
+    # Build calendar context if available
+    calendar_hint = ""
+    overlapping_count = 0
+    if calendar_path and os.path.exists(calendar_path) and duration and metadata.get('meeting_start'):
+        try:
+            meeting_start = datetime.fromisoformat(metadata['meeting_start'])
+            meeting_end = datetime.fromisoformat(metadata['meeting_end'])
+            meeting_date = meeting_start.strftime('%Y-%m-%d')
+            calendar_entries = parse_calendar_org(calendar_path)
+            day_entries = [e for e in calendar_entries if e['date'] == meeting_date]
+            overlapping = [e for e in day_entries
+                           if time_overlaps(e, meeting_start, meeting_end)]
+            overlapping_count = len(overlapping)
+            if overlapping:
+                lines = []
+                for i, e in enumerate(overlapping, 1):
+                    time_str = f"{e['start_time']}-{e['end_time']}" if e['start_time'] else "all-day"
+                    participants = ', '.join(e['participants']) if e['participants'] else 'unknown'
+                    lines.append(f"  {i}. [{time_str}] {e['title']} (Participants: {participants})")
+                calendar_hint = (
+                    f"\n\nCALENDAR CONTEXT: The recording window ({meeting_start.strftime('%H:%M')}-"
+                    f"{meeting_end.strftime('%H:%M')}) overlaps with {len(overlapping)} calendar entries:\n"
+                    + '\n'.join(lines)
+                )
+        except (ValueError, TypeError):
+            pass
+    
+    # Only check for multi-meeting if transcript is long enough
+    # Either by body size + duration, body size + calendar hints,
+    # or body size alone if very long (no metadata available)
+    should_check = len(body) >= MULTI_MEETING_MIN_BODY and (
+        (duration and duration >= MULTI_MEETING_MIN_DURATION) or
+        overlapping_count >= 2 or
+        (duration is None and len(body) >= MULTI_MEETING_MIN_BODY * 2)
+    )
+    
+    if not should_check:
+        return None
+    
+    print(f"  Multi-meeting check: {len(body)} chars, {int(duration or 0)}s duration, "
+          f"{overlapping_count} calendar entries")
+    
+    # Use LLM to detect meeting boundaries.
+    # Send the full transcript — haiku supports 200K tokens and even a 60K char
+    # transcript is only ~15K tokens. Sampling misses boundaries in the gaps.
+    transcript_for_prompt = body
+    
+    prompt = f"""Analyze this meeting transcript to determine if it contains MULTIPLE separate meetings recorded back-to-back (e.g., two consecutive 1:1s where recording wasn't stopped between them).
+
+Signs of multiple meetings:
+- Goodbye/farewell exchanges followed by new greetings ("Bye!" then "Hello, how are you?")
+- Complete topic shift with new participants being greeted
+- Sign-off language ("talk to you later", "take care") followed by meeting-start language
+
+Signs of a SINGLE meeting (do NOT split):
+- Topic changes within the same meeting (normal agenda progression)
+- People joining/leaving a group meeting
+- Brief pleasantries between agenda items
+
+{calendar_hint}
+
+TRANSCRIPT:
+{transcript_for_prompt}
+
+Respond with ONLY a JSON object, no other text:
+{{
+  "meeting_count": 1 or 2 or 3...,
+  "confidence": 0.0 to 1.0,
+  "reasoning": "brief explanation",
+  "split_points": [
+    {{"text_before": "last ~20 words before the split", "text_after": "first ~20 words after the split"}}
+  ]
+}}
+
+If this is a single meeting, return meeting_count: 1 with empty split_points.
+Be CONSERVATIVE — only split if you see clear meeting-ending AND meeting-starting signals."""
+
+    model_name = model if model else 'claude-haiku-4.5'
+    command = [COPILOT_PATH, '-p', prompt, '--allow-all-tools', '--allow-all-paths', '--model', model_name]
+    
+    try:
+        if debug:
+            print(f"  Multi-meeting: Running LLM detection...")
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        
+        if result.returncode != 0:
+            print(f"  Multi-meeting: LLM error: {result.stderr[:200]}")
+            return None
+        
+        output = result.stdout.strip()
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', output, re.DOTALL)
+        if not json_match:
+            print(f"  Multi-meeting: Could not parse LLM response")
+            return None
+        
+        detection = json.loads(json_match.group(0))
+        
+    except subprocess.TimeoutExpired:
+        print(f"  Multi-meeting: LLM timed out")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"  Multi-meeting: JSON parse error: {e}")
+        return None
+    
+    meeting_count = detection.get('meeting_count', 1)
+    confidence = detection.get('confidence', 0)
+    reasoning = detection.get('reasoning', '')
+    
+    if meeting_count <= 1 or confidence < 0.7:
+        print(f"  Multi-meeting: Single meeting (confidence: {confidence:.0%}, {reasoning})")
+        return None
+    
+    print(f"  Multi-meeting: Detected {meeting_count} meetings (confidence: {confidence:.0%})")
+    print(f"  Reasoning: {reasoning}")
+    
+    # Find split positions in the body text using the text anchors
+    split_positions = []
+    for sp in detection.get('split_points', []):
+        text_before = sp.get('text_before', '')
+        text_after = sp.get('text_after', '')
+        
+        if text_before:
+            # Find the position of text_before in the body
+            idx = body.find(text_before)
+            if idx >= 0:
+                split_positions.append(idx + len(text_before))
+                continue
+        
+        if text_after:
+            idx = body.find(text_after)
+            if idx >= 0:
+                split_positions.append(idx)
+                continue
+        
+        print(f"  Warning: Could not locate split point in transcript")
+    
+    return split_positions if split_positions else None
+
+
+def split_transcript(filepath: str, split_positions: list[int], paths: dict) -> list[str]:
+    """Split a transcript file at the given positions into separate inbox files.
+    
+    Returns list of new file paths created in the inbox directory.
+    """
+    body = get_transcript_body(filepath)
+    metadata = parse_transcript_header(filepath)
+    basename = os.path.basename(filepath)
+    name_stem = os.path.splitext(basename)[0]
+    ext = os.path.splitext(basename)[1]
+    
+    # Parse timestamps for interpolation
+    start_time = None
+    end_time = None
+    if metadata.get('meeting_start') and metadata.get('meeting_end'):
+        try:
+            start_time = datetime.fromisoformat(metadata['meeting_start'])
+            end_time = datetime.fromisoformat(metadata['meeting_end'])
+        except (ValueError, TypeError):
+            pass
+    
+    total_len = len(body)
+    
+    # Build segments
+    positions = [0] + sorted(split_positions) + [total_len]
+    new_files = []
+    
+    for i in range(len(positions) - 1):
+        segment_body = body[positions[i]:positions[i+1]].strip()
+        if not segment_body:
+            continue
+        
+        # Interpolate timestamps based on character position
+        part_metadata = dict(metadata)
+        if start_time and end_time:
+            total_duration = (end_time - start_time).total_seconds()
+            frac_start = positions[i] / total_len
+            frac_end = positions[i+1] / total_len
+            from datetime import timedelta
+            part_start = start_time + timedelta(seconds=total_duration * frac_start)
+            part_end = start_time + timedelta(seconds=total_duration * frac_end)
+            part_metadata['meeting_start'] = part_start.isoformat()
+            part_metadata['meeting_end'] = part_end.isoformat()
+        
+        # Build YAML front matter
+        front_matter_lines = ['---']
+        for key in ('meeting_start', 'meeting_end', 'recording_source'):
+            if key in part_metadata:
+                front_matter_lines.append(f"{key}: {part_metadata[key]}")
+        front_matter_lines.append('---\n\n')
+        front_matter = '\n'.join(front_matter_lines)
+        
+        # Write to inbox
+        part_name = f"{name_stem}-part{i+1}{ext}"
+        part_path = os.path.join(paths['inbox'], part_name)
+        with open(part_path, 'w', encoding='utf-8') as f:
+            f.write(front_matter + segment_body)
+        
+        new_files.append(part_path)
+        print(f"  Split: created {part_name} ({len(segment_body)} chars)")
+    
+    # Remove original
+    os.remove(filepath)
+    print(f"  Split: removed original {basename}")
+    
+    return new_files
+
+
 def time_overlaps(calendar_entry: dict, meeting_start: datetime, meeting_end: datetime) -> bool:
     """Check if a calendar entry's time window overlaps with the meeting window.
     
@@ -1001,6 +1272,10 @@ def git_commit_changes(inbox_files, transcript_files, org_files, workspace_dir):
 def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_template=None, debug=False, calendar_path=None):
     """Process all transcript files in the inbox directory.
     
+    Pre-processing steps before summarization:
+      1. Filter out junk transcripts (too short, too brief)
+      2. Detect and split multi-meeting transcripts
+    
     Returns:
         tuple: (successful_count, failed_count) or (0, 0) if no files found
     """
@@ -1027,10 +1302,56 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     os.makedirs(paths['transcripts'], exist_ok=True)
     os.makedirs(paths['notes'], exist_ok=True)
     
+    # --- Step 1: Filter junk transcripts ---
+    skipped = 0
+    filtered_files = []
+    for transcript_file in transcript_files:
+        worth_it, reason = is_transcript_worth_processing(transcript_file)
+        if not worth_it:
+            print(f"  Skipping {os.path.basename(transcript_file)}: {reason}")
+            skipped += 1
+            if use_git:
+                # Stage the deletion and commit so it doesn't get re-processed
+                workspace_abs = os.path.abspath(paths['workspace'])
+                rel_path = os.path.relpath(os.path.abspath(transcript_file), workspace_abs)
+                os.remove(transcript_file)
+                subprocess.run(['git', 'add', rel_path], capture_output=True, text=True, cwd=paths['workspace'])
+                subprocess.run(['git', 'commit', '-m', f'Skip junk transcript: {os.path.basename(transcript_file)} ({reason})'],
+                               capture_output=True, text=True, cwd=paths['workspace'])
+            else:
+                os.remove(transcript_file)
+        else:
+            filtered_files.append(transcript_file)
+    
+    if skipped:
+        print(f"  Filtered out {skipped} junk transcript(s)")
+    
+    # --- Step 2: Detect and split multi-meeting transcripts ---
+    final_files = []
+    for transcript_file in filtered_files:
+        split_positions = detect_multi_meeting(
+            transcript_file, calendar_path=calendar_path,
+            target=target, model=model, debug=debug
+        )
+        if split_positions:
+            new_files = split_transcript(transcript_file, split_positions, paths)
+            final_files.extend(new_files)
+        else:
+            final_files.append(transcript_file)
+    
+    if not final_files:
+        if skipped:
+            print(f"\nAll {skipped} transcript(s) were filtered as junk")
+        return 0, 0
+    
+    if len(final_files) != len(filtered_files):
+        print(f"  After splitting: {len(final_files)} file(s) to process")
+    
+    # --- Step 3: Process each transcript ---
     successful = 0
     failed = 0
     
-    for transcript_file in transcript_files:
+    for transcript_file in final_files:
         try:
             result = process_transcript(transcript_file, paths, target, model, prompt_template, debug, calendar_path)
             if result[0]:  # Success
@@ -1052,7 +1373,10 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
             failed += 1
     
     print(f"\n{'='*60}")
-    print(f"Processing complete: {successful} successful, {failed} failed")
+    summary_parts = [f"{successful} successful", f"{failed} failed"]
+    if skipped:
+        summary_parts.append(f"{skipped} skipped")
+    print(f"Processing complete: {', '.join(summary_parts)}")
     print(f"{'='*60}")
     
     return successful, failed
