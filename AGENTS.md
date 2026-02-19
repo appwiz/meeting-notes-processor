@@ -167,6 +167,18 @@ but copilot also needs read, glob, and shell permissions.
 - `tests/` - Test suite (run with `uv run --with pytest --with pyyaml pytest tests/`)
 - `skills/` - Copilot CLI skills (e.g., workiq-notes)
 
+### Processing Pipeline (run_summarization.py)
+
+The `process_inbox()` function runs a 3-step pipeline:
+
+1. **Filter** — `is_transcript_worth_processing()` rejects junk transcripts using heuristics (body < 200 chars or duration < 60s). No LLM call needed.
+2. **Split** — `detect_multi_meeting()` uses a cheap LLM (haiku) to check for back-to-back meetings. If found, `split_transcript()` creates separate part files with interpolated timestamps.
+3. **Process** — Each surviving transcript goes through summarization, calendar enrichment, and file organization.
+
+Key constants: `MIN_BODY_LENGTH=200`, `MIN_DURATION_SECONDS=60`, `MULTI_MEETING_MIN_BODY=5000`.
+
+JSON extraction from LLM output uses `_extract_json_object()` (brace-depth counting, not regex).
+
 ## Troubleshooting
 
 - Use `--debug` flag with run_summarization.py for verbose output when diagnosing issues

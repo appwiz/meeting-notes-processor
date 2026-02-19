@@ -65,6 +65,13 @@ Meeting transcripts accumulate rapidly but lack organization and context, making
 - **FR-5.7**: Daemon provides `/calendar` endpoint to receive calendar.org updates via webhook (JSON or plain text)
 - **FR-5.8**: Standalone mode supports async processing: return immediately after saving transcript, process in background thread
 
+### 6. Transcript Pre-Processing
+
+- **FR-6.1**: System filters out junk transcripts (too short or too brief) before LLM processing, avoiding wasted API calls
+- **FR-6.2**: System detects back-to-back meetings in a single recording and splits them into separate files for individual processing
+- **FR-6.3**: Split files get interpolated timestamps from the original recording's YAML front matter
+- **FR-6.4**: File operations are atomic — original transcript is only removed after all split parts are written successfully
+
 ## Directory Structure
 
 ```
@@ -177,7 +184,16 @@ User selects which LLM to use via command-line argument or configuration, provid
 - ✅ Progress logging includes transcript filename for traceability
 - ✅ Copilot CLI uses `--allow-all-tools --allow-all-paths` for non-interactive mode
 
-#### Phase 6: Enhancement (Future)
+#### Phase 6: Pre-Processing Pipeline (Complete)
+- ✅ Junk transcript filter (heuristic: body < 200 chars or duration < 60s)
+- ✅ Multi-meeting detection (LLM-based, uses haiku for cost efficiency)
+- ✅ Transcript splitting at detected boundaries with interpolated timestamps
+- ✅ 3-step process_inbox pipeline: filter → split → process
+- ✅ Safe file operations (atomic splits, transcript-first moves, git rm for deletions)
+- ✅ Robust JSON extraction from LLM output (handles nested objects)
+- ✅ Tests for filter, split, and JSON extraction (test_preprocess.py)
+
+#### Phase 7: Enhancement (Future)
 - ⏳ Add duplicate detection
 - ⏳ Add search and indexing capabilities
 - ⏳ Support additional LLM backends

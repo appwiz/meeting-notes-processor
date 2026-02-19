@@ -219,6 +219,16 @@ uv run run_summarization.py --prompt prompts/planning.txt
 
 Drop multiple transcripts in `inbox/`—they'll all be processed in one run.
 
+### Pre-Processing Pipeline
+
+Before summarization, the processor automatically:
+
+1. **Filters junk transcripts** — Recordings shorter than 60 seconds or with less than 200 characters of content are skipped. This catches audio fragments, test recordings, and accidental mic activations.
+
+2. **Splits multi-meeting recordings** — If recording wasn't stopped between back-to-back meetings, the processor uses a lightweight LLM call (Haiku) to detect meeting boundaries (farewell/greeting patterns) and splits the file into separate transcripts for individual processing.
+
+Split files get `-part1`, `-part2` suffixes and interpolated timestamps from the original recording's metadata.
+
 ---
 
 ## Automated Processing with meetingnotesd
