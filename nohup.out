@@ -1,0 +1,93 @@
+09:07:39 [meeting-bar] INFO Meeting Bar starting
+09:07:39 [meeting-bar] INFO   Transcriber: http://pilot:8000
+09:07:39 [meeting-bar] INFO   VBAN target: pilot:6980
+09:07:39 [meeting-bar] INFO   Poll interval: 5s
+09:07:39 [meeting-bar] INFO   Calendar: /Users/ewilderj/gtd/outlook.org
+09:07:39 [meeting-bar] INFO   Log: /tmp/meeting-bar.log
+09:07:39 [meeting-bar] INFO   Quit: use Quit menu item, or Ctrl-\ from terminal
+09:07:41 [meeting-bar] INFO Detection loop active
+09:07:41 [meeting-bar] INFO Meeting detected: Teams
+09:07:42 [meeting-bar] INFO Calendar match: 'CIP SLT Sync'
+09:07:42 [meeting-bar] INFO Starting recording: 'CIP SLT Sync' (Teams, auto=True)
+09:07:42 [meeting-bar] INFO VBAN sender started (PID 97217) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+09:07:45 [meeting-bar] WARNING Already recording: Already recording: Teams Meeting 2026-02-13 19:11
+09:07:45 [meeting-bar] INFO Recording started: 'CIP SLT Sync'
+09:50:05 [meeting-bar] INFO Meeting ended (was: Teams)
+09:50:05 [meeting-bar] INFO Stopping recording
+09:50:07 [meeting-bar] INFO VBAN sender stopped (PID 97217)
+09:50:07 [meeting-bar] INFO Recording stopped: 'CIP SLT Sync' (42:22)
+11:44:17 [meeting-bar] INFO Meeting detected: Zoom
+11:44:17 [meeting-bar] INFO Starting recording: 'Zoom Meeting 2026-02-17 11:44' (Zoom, auto=True)
+11:44:17 [meeting-bar] INFO VBAN sender started (PID 57568) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+11:44:20 [meeting-bar] INFO Recording started: 'Zoom Meeting 2026-02-17 11:44'
+12:04:17 [meeting-bar] INFO Meeting ended (was: Zoom)
+12:04:17 [meeting-bar] INFO Stopping recording
+12:04:19 [meeting-bar] INFO VBAN sender stopped (PID 57568)
+12:04:19 [meeting-bar] INFO Recording stopped: 'Zoom Meeting 2026-02-17 11:44' (19:59)
+13:32:52 [meeting-bar] INFO Meeting detected: Zoom
+13:32:52 [meeting-bar] INFO Calendar match: 'jbayhylle / ewilderj 1:1'
+13:32:52 [meeting-bar] INFO Starting recording: 'jbayhylle / ewilderj 1:1' (Zoom, auto=True)
+13:32:52 [meeting-bar] INFO VBAN sender started (PID 92615) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+13:32:55 [meeting-bar] INFO Recording started: 'jbayhylle / ewilderj 1:1'
+14:02:50 [meeting-bar] INFO Meeting ended (was: Zoom)
+14:02:50 [meeting-bar] INFO Stopping recording
+14:02:52 [meeting-bar] INFO VBAN sender stopped (PID 92615)
+14:02:52 [meeting-bar] INFO Recording stopped: 'jbayhylle / ewilderj 1:1' (29:56)
+14:06:32 [meeting-bar] INFO Meeting detected: Zoom
+14:06:32 [meeting-bar] INFO Calendar match: 'prasanthi007 / ewilderj (Mondays)'
+14:06:32 [meeting-bar] INFO Starting recording: 'prasanthi007 / ewilderj (Mondays)' (Zoom, auto=True)
+14:06:32 [meeting-bar] INFO VBAN sender started (PID 4040) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+14:06:35 [meeting-bar] INFO Recording started: 'prasanthi007 / ewilderj (Mondays)'
+14:55:31 [meeting-bar] INFO Meeting ended (was: Zoom)
+14:55:31 [meeting-bar] INFO Stopping recording
+14:55:37 [meeting-bar] INFO VBAN sender stopped (PID 4040)
+14:55:37 [meeting-bar] INFO Recording stopped: 'prasanthi007 / ewilderj (Mondays)' (49:02)
+14:55:42 [meeting-bar] INFO Meeting detected: Zoom
+14:55:42 [meeting-bar] INFO Starting recording: 'Zoom Meeting 2026-02-17 14:55' (Zoom, auto=True)
+14:55:42 [meeting-bar] INFO VBAN sender started (PID 19992) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+14:55:45 [meeting-bar] INFO Recording started: 'Zoom Meeting 2026-02-17 14:55'
+15:27:26 [meeting-bar] INFO Meeting ended (was: Zoom)
+15:27:26 [meeting-bar] INFO Stopping recording
+15:27:28 [meeting-bar] INFO VBAN sender stopped (PID 19992)
+15:27:28 [meeting-bar] INFO Recording stopped: 'Zoom Meeting 2026-02-17 14:55' (31:42)
+16:04:00 [meeting-bar] INFO Meeting detected: Zoom
+16:04:00 [meeting-bar] INFO Calendar match: 'Satya / Edd'
+16:04:00 [meeting-bar] INFO Starting recording: 'Satya / Edd' (Zoom, auto=True)
+16:04:00 [meeting-bar] INFO VBAN sender started (PID 43442) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+16:04:03 [meeting-bar] INFO Recording started: 'Satya / Edd'
+16:56:45 [meeting-bar] INFO Meeting ended (was: Zoom)
+16:56:45 [meeting-bar] INFO Stopping recording
+16:56:47 [meeting-bar] INFO VBAN sender stopped (PID 43442)
+16:56:47 [meeting-bar] INFO Recording stopped: 'Satya / Edd' (52:43)
+08:00:30 [meeting-bar] INFO Meeting detected: Zoom
+08:00:30 [meeting-bar] INFO Calendar match: 'Engineering Town Hall'
+08:00:30 [meeting-bar] INFO Starting recording: 'Engineering Town Hall' (Zoom, auto=True)
+08:00:30 [meeting-bar] INFO VBAN sender started (PID 63787) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+08:00:33 [meeting-bar] INFO Recording started: 'Engineering Town Hall'
+08:58:18 [meeting-bar] INFO Meeting ended (was: Zoom)
+08:58:18 [meeting-bar] INFO Stopping recording
+08:58:19 [meeting-bar] ERROR Failed to stop recording: 500 Server Error: Internal Server Error for url: http://pilot:8000/stop
+08:58:19 [meeting-bar] WARNING No active recording on pilot
+09:02:16 [meeting-bar] INFO on_start callback fired
+09:02:16 [meeting-bar] INFO Manual start with calendar title: 'Copilot Platform LSR (Live Site Review) [US/EU]'
+09:02:16 [meeting-bar] INFO Starting recording: 'Copilot Platform LSR (Live Site Review) [US/EU]' (Manual, auto=False)
+09:02:16 [meeting-bar] INFO VBAN sender started (PID 85635) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+09:02:19 [meeting-bar] INFO Recording started: 'Copilot Platform LSR (Live Site Review) [US/EU]'
+09:32:16 [meeting-bar] INFO on_stop callback fired
+09:32:16 [meeting-bar] INFO Stopping recording
+09:32:17 [meeting-bar] ERROR Failed to stop recording: 500 Server Error: Internal Server Error for url: http://pilot:8000/stop
+09:32:17 [meeting-bar] WARNING No active recording on pilot
+09:35:13 [meeting-bar] INFO on_start callback fired
+09:35:14 [meeting-bar] INFO Manual start with calendar title: 'Availability Program Huddle'
+09:35:14 [meeting-bar] INFO Starting recording: 'Availability Program Huddle' (Manual, auto=False)
+09:35:14 [meeting-bar] INFO VBAN sender started (PID 97637) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+09:35:17 [meeting-bar] INFO Recording started: 'Availability Program Huddle'
+10:32:21 [meeting-bar] INFO on_stop callback fired
+10:32:21 [meeting-bar] INFO Stopping recording
+10:32:22 [meeting-bar] ERROR Failed to stop recording: 500 Server Error: Internal Server Error for url: http://pilot:8000/stop
+10:32:22 [meeting-bar] WARNING No active recording on pilot
+10:33:24 [meeting-bar] INFO on_start callback fired
+10:33:24 [meeting-bar] INFO Manual start with calendar title: '[Weekly] RAPID Workstream Checkpoint: Product Roadmap Visibility'
+10:33:24 [meeting-bar] INFO Starting recording: '[Weekly] RAPID Workstream Checkpoint: Product Roadmap Visibility' (Manual, auto=False)
+10:33:24 [meeting-bar] INFO VBAN sender started (PID 17279) → mixed (BlackHole 2ch + Yeti Stereo Microphone)
+10:33:27 [meeting-bar] INFO Recording started: '[Weekly] RAPID Workstream Checkpoint: Product Roadmap Visibility'

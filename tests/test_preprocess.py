@@ -186,3 +186,27 @@ class TestSplitTranscript:
         # Split at position 0 — first segment would be empty
         new_files = run_summarization.split_transcript(filepath, [0], self.paths)
         assert len(new_files) == 1  # only one non-empty part
+
+
+class TestExtractJsonObject:
+    """Tests for the JSON extraction helper."""
+
+    def test_simple_json(self):
+        result = run_summarization._extract_json_object('Here is {"a": 1} the end')
+        assert result == {"a": 1}
+
+    def test_nested_json(self):
+        result = run_summarization._extract_json_object('{"a": {"b": {"c": 3}}}')
+        assert result == {"a": {"b": {"c": 3}}}
+
+    def test_json_with_surrounding_text(self):
+        result = run_summarization._extract_json_object(
+            'Some preamble\n{"meeting_count": 2, "confidence": 0.9}\nDone'
+        )
+        assert result["meeting_count"] == 2
+
+    def test_no_json(self):
+        assert run_summarization._extract_json_object("no json here") is None
+
+    def test_malformed_json(self):
+        assert run_summarization._extract_json_object("{bad json}") is None

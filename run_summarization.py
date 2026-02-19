@@ -256,6 +256,24 @@ MULTI_MEETING_MIN_BODY = 5000
 MULTI_MEETING_MIN_DURATION = 3600  # 60 minutes
 
 
+def _extract_json_object(text: str) -> dict | None:
+    """Extract the first valid JSON object from text, handling nested braces."""
+    for i, ch in enumerate(text):
+        if ch == '{':
+            depth = 0
+            for j in range(i, len(text)):
+                if text[j] == '{':
+                    depth += 1
+                elif text[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[i:j+1])
+                        except json.JSONDecodeError:
+                            break  # malformed, try next '{'
+    return None
+
+
 def is_transcript_worth_processing(filepath: str) -> tuple[bool, str]:
     """Check if a transcript has enough content to be worth summarizing.
     
@@ -393,18 +411,13 @@ Be CONSERVATIVE — only split if you see clear meeting-ending AND meeting-start
             return None
         
         output = result.stdout.strip()
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', output, re.DOTALL)
-        if not json_match:
+        detection = _extract_json_object(output)
+        if not detection:
             print(f"  Multi-meeting: Could not parse LLM response")
             return None
         
-        detection = json.loads(json_match.group(0))
-        
     except subprocess.TimeoutExpired:
         print(f"  Multi-meeting: LLM timed out")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"  Multi-meeting: JSON parse error: {e}")
         return None
     
     meeting_count = detection.get('meeting_count', 1)
@@ -469,41 +482,51 @@ def split_transcript(filepath: str, split_positions: list[int], paths: dict) -> 
     positions = [0] + sorted(split_positions) + [total_len]
     new_files = []
     
-    for i in range(len(positions) - 1):
-        segment_body = body[positions[i]:positions[i+1]].strip()
-        if not segment_body:
-            continue
-        
-        # Interpolate timestamps based on character position
-        part_metadata = dict(metadata)
-        if start_time and end_time:
-            total_duration = (end_time - start_time).total_seconds()
-            frac_start = positions[i] / total_len
-            frac_end = positions[i+1] / total_len
-            from datetime import timedelta
-            part_start = start_time + timedelta(seconds=total_duration * frac_start)
-            part_end = start_time + timedelta(seconds=total_duration * frac_end)
-            part_metadata['meeting_start'] = part_start.isoformat()
-            part_metadata['meeting_end'] = part_end.isoformat()
-        
-        # Build YAML front matter
-        front_matter_lines = ['---']
-        for key in ('meeting_start', 'meeting_end', 'recording_source'):
-            if key in part_metadata:
-                front_matter_lines.append(f"{key}: {part_metadata[key]}")
-        front_matter_lines.append('---\n\n')
-        front_matter = '\n'.join(front_matter_lines)
-        
-        # Write to inbox
-        part_name = f"{name_stem}-part{i+1}{ext}"
-        part_path = os.path.join(paths['inbox'], part_name)
-        with open(part_path, 'w', encoding='utf-8') as f:
-            f.write(front_matter + segment_body)
-        
-        new_files.append(part_path)
-        print(f"  Split: created {part_name} ({len(segment_body)} chars)")
+    try:
+        for i in range(len(positions) - 1):
+            segment_body = body[positions[i]:positions[i+1]].strip()
+            if not segment_body:
+                continue
+            
+            # Interpolate timestamps based on character position
+            part_metadata = dict(metadata)
+            if start_time and end_time:
+                total_duration = (end_time - start_time).total_seconds()
+                frac_start = positions[i] / total_len
+                frac_end = positions[i+1] / total_len
+                from datetime import timedelta
+                part_start = start_time + timedelta(seconds=total_duration * frac_start)
+                part_end = start_time + timedelta(seconds=total_duration * frac_end)
+                part_metadata['meeting_start'] = part_start.isoformat()
+                part_metadata['meeting_end'] = part_end.isoformat()
+            
+            # Build YAML front matter
+            front_matter_lines = ['---']
+            for key in ('meeting_start', 'meeting_end', 'recording_source'):
+                if key in part_metadata:
+                    front_matter_lines.append(f"{key}: {part_metadata[key]}")
+            front_matter_lines.append('---\n\n')
+            front_matter = '\n'.join(front_matter_lines)
+            
+            # Write to inbox
+            part_name = f"{name_stem}-part{i+1}{ext}"
+            part_path = os.path.join(paths['inbox'], part_name)
+            with open(part_path, 'w', encoding='utf-8') as f:
+                f.write(front_matter + segment_body)
+            
+            new_files.append(part_path)
+            print(f"  Split: created {part_name} ({len(segment_body)} chars)")
+    except (OSError, IOError) as e:
+        # Clean up any partial files to avoid confusion
+        for f in new_files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        print(f"  Split failed ({e}), keeping original {basename}")
+        return []
     
-    # Remove original
+    # Only remove original after all parts written successfully
     os.remove(filepath)
     print(f"  Split: removed original {basename}")
     
@@ -856,18 +879,13 @@ def enrich_with_calendar(org_path: str, transcript_path: str, calendar_path: str
         
         # Extract JSON from output
         output = result.stdout.strip()
-        json_match = re.search(r'\{[^{}]*\}', output, re.DOTALL)
-        if not json_match:
+        match_result = _extract_json_object(output)
+        if not match_result:
             print("  Calendar: Could not parse LLM response")
             return None
         
-        match_result = json.loads(json_match.group(0))
-        
     except subprocess.TimeoutExpired:
         print("  Calendar: LLM timed out")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"  Calendar: JSON parse error: {e}")
         return None
     
     # Check if we have a confident match
@@ -1206,12 +1224,14 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     transcript_path = ensure_unique_filename(paths['transcripts'], base_name, 'txt')
     org_path = ensure_unique_filename(paths['notes'], base_name, 'org')
     
-    # Move files to their final locations
-    shutil.move(temp_org_path, org_path)
-    print(f"  Created: {org_path}")
-    
+    # Move files to their final locations.
+    # Move transcript first — it's the source of truth. If the notes move
+    # fails, we lose only the regenerable summary, not the original data.
     shutil.move(input_file, transcript_path)
     print(f"  Moved transcript to: {transcript_path}")
+    
+    shutil.move(temp_org_path, org_path)
+    print(f"  Created: {org_path}")
     
     return True, transcript_path, org_path
 
@@ -1311,13 +1331,16 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
             print(f"  Skipping {os.path.basename(transcript_file)}: {reason}")
             skipped += 1
             if use_git:
-                # Stage the deletion and commit so it doesn't get re-processed
+                # Use git rm so deletion is tracked; if git fails, keep the file
                 workspace_abs = os.path.abspath(paths['workspace'])
                 rel_path = os.path.relpath(os.path.abspath(transcript_file), workspace_abs)
-                os.remove(transcript_file)
-                subprocess.run(['git', 'add', rel_path], capture_output=True, text=True, cwd=paths['workspace'])
-                subprocess.run(['git', 'commit', '-m', f'Skip junk transcript: {os.path.basename(transcript_file)} ({reason})'],
-                               capture_output=True, text=True, cwd=paths['workspace'])
+                rm_result = subprocess.run(['git', 'rm', '-f', rel_path], capture_output=True, text=True, cwd=paths['workspace'])
+                if rm_result.returncode == 0:
+                    subprocess.run(['git', 'commit', '-m', f'Skip junk transcript: {os.path.basename(transcript_file)} ({reason})'],
+                                   capture_output=True, text=True, cwd=paths['workspace'])
+                else:
+                    # git rm failed — fall back to plain delete
+                    os.remove(transcript_file)
             else:
                 os.remove(transcript_file)
         else:
