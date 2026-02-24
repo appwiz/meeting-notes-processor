@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -383,11 +384,50 @@ def stop_sender():
 
 
 # ---------------------------------------------------------------------------
+# DNS pre-resolution (prevents getaddrinfo from stalling the poll loop)
+# ---------------------------------------------------------------------------
+
+_dns_ok = True  # track transitions for logging
+
+
+def _resolve_host(hostname: str, timeout: float = 3.0) -> bool:
+    """Resolve hostname with a timeout. Returns True if reachable."""
+    result = [None]
+
+    def resolve():
+        try:
+            result[0] = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        except socket.gaierror:
+            pass
+
+    t = threading.Thread(target=resolve, daemon=True)
+    t.start()
+    t.join(timeout)
+    return result[0] is not None
+
+
+def _check_pilot_dns() -> bool:
+    """Pre-check DNS for pilot host; log transitions."""
+    global _dns_ok
+    from urllib.parse import urlparse
+    hostname = urlparse(TRANSCRIBER_URL).hostname
+    ok = _resolve_host(hostname)
+    if ok and not _dns_ok:
+        logger.info(f"Pilot DNS reachable again ({hostname})")
+    elif not ok and _dns_ok:
+        logger.warning(f"Pilot DNS unreachable ({hostname}) — skipping poll")
+    _dns_ok = ok
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # Transcriber API
 # ---------------------------------------------------------------------------
 
 
 def transcriber_status() -> dict | None:
+    if not _check_pilot_dns():
+        return None
     try:
         return requests.get(f"{TRANSCRIBER_URL}/status", timeout=5).json()
     except requests.RequestException as e:
