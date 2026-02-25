@@ -425,13 +425,26 @@ def _check_pilot_dns() -> bool:
 # ---------------------------------------------------------------------------
 
 
+_pilot_connected = True  # track connection state for transition logging
+
+
 def transcriber_status() -> dict | None:
+    global _pilot_connected
     if not _check_pilot_dns():
+        if _pilot_connected:
+            logger.warning("Lost connection to pilot")
+            _pilot_connected = False
         return None
     try:
-        return requests.get(f"{TRANSCRIBER_URL}/status", timeout=5).json()
-    except requests.RequestException as e:
-        logger.error(f"Cannot reach transcriber: {e}")
+        result = requests.get(f"{TRANSCRIBER_URL}/status", timeout=5).json()
+        if not _pilot_connected:
+            logger.info("Reconnected to pilot")
+            _pilot_connected = True
+        return result
+    except requests.RequestException:
+        if _pilot_connected:
+            logger.warning("Lost connection to pilot")
+            _pilot_connected = False
         return None
 
 
