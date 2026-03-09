@@ -124,7 +124,7 @@ or mDNS).
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `WHISPER_CLI` | `~/whisper.cpp/build/bin/whisper-cli` | |
-| `WHISPER_MODEL` | `~/whisper.cpp/models/ggml-large-v3.bin` | ~3 GB |
+| `WHISPER_MODEL` | `~/whisper.cpp/models/ggml-small.en-tdrz.bin` | Tinydiarize-enabled English model |
 | `RECORDINGS_DIR` | `~/transcriber/recordings` | WAV + txt files |
 | `WEBHOOK_URL` | `http://nuctu:9876/webhook` | Set in launchd plist |
 | `VBAN_PORT` | `6980` | |
@@ -142,12 +142,12 @@ or mDNS).
 
 ## Whisper Configuration
 
-- **Model**: `large-v3` (`ggml-large-v3.bin`). Do not downgrade—accuracy matters.
-- **Flags**: `-m <model> -f <wav> -l en --print-progress`. Timestamps are
-  enabled (no `--no-timestamps` flag).
+- **Model**: `small.en-tdrz` (`ggml-small.en-tdrz.bin`) for English-only
+  transcription with tinydiarize speaker-turn markers.
+- **Flags**: `-m <model> -f <wav> -l en --print-progress --tinydiarize`.
+  Timestamps are enabled (no `--no-timestamps` flag).
 - **Metal GPU**: whisper.cpp is built with Metal acceleration on the M1.
-- **Tinydiarize (`-tdrz`)**: Investigated and rejected. Only has a `small.en`
-  model (accuracy regression) and the project appears stalled.
+- **Tinydiarize (`-tdrz`)**: Required for downstream speaker-turn markers.
 
 ## Meeting Detection — Key Constraints
 

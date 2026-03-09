@@ -7,7 +7,7 @@
 REMOTE_HOST := edd@pilot
 REMOTE_DIR := ~/transcriber
 WHISPER_DIR := ~/whisper.cpp
-WHISPER_MODEL := large-v3
+WHISPER_MODEL := small.en-tdrz
 SERVICE_LABEL := com.transcriber
 PLIST := $(SERVICE_LABEL).plist
 

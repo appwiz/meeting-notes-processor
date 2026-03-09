@@ -286,7 +286,7 @@ _HALLUCINATION_REPEAT_THRESHOLD = 3
 def _remove_hallucinated_lines(transcript: str) -> str:
     """Remove hallucinated repetitive lines from a whisper transcript.
 
-    Whisper models (especially large-v3) tend to generate the same phrase
+    Whisper models can generate the same phrase
     over and over during silence or low-signal audio. This function detects
     runs of consecutive lines with identical text content (ignoring timestamps)
     and collapses them. Runs shorter than _HALLUCINATION_REPEAT_THRESHOLD are

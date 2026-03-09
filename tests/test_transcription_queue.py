@@ -22,6 +22,7 @@ Run with: uv run pytest tests/test_transcription_queue.py -v
 """
 
 import asyncio
+import importlib
 import os
 import sys
 import time
@@ -52,6 +53,49 @@ def _make_recording(title: str = "Test Meeting", tmp_path: Path = None) -> trans
     rec = transcriber.Recording(title=title, audio_path=audio_path)
     rec.meeting_end = datetime.now(timezone.utc)
     return rec
+
+
+def test_default_whisper_model_matches_docs(monkeypatch):
+    """Default model should stay aligned with the documented tdrz setup."""
+    monkeypatch.delenv("WHISPER_MODEL", raising=False)
+    reloaded = importlib.reload(transcriber)
+    try:
+        assert reloaded.WHISPER_MODEL.endswith("ggml-small.en-tdrz.bin")
+    finally:
+        importlib.reload(transcriber)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_uses_documented_whisper_flags(tmp_path, monkeypatch):
+    """The server should enable tinydiarize by default."""
+    recording = _make_recording(tmp_path=tmp_path)
+    recording.audio_path.write_bytes(b"not-a-real-wav")
+
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                b"[00:00:00.000 --> 00:00:01.000]   Hello there.\n",
+                b"",
+            )
+
+    async def fake_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(transcriber, "WHISPER_CLI", "/tmp/whisper-cli")
+    monkeypatch.setattr(transcriber, "WHISPER_MODEL", "/tmp/ggml-small.en-tdrz.bin")
+
+    with mock.patch.object(transcriber.asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        await transcriber._transcribe(recording)
+
+    assert captured["cmd"][0] == "/tmp/whisper-cli"
+    assert "--tinydiarize" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("-m") + 1] == "/tmp/ggml-small.en-tdrz.bin"
+    assert recording.transcript_path.read_text() == "Hello there."
 
 
 @pytest.mark.asyncio

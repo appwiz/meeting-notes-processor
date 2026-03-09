@@ -28,6 +28,7 @@ Designed to pair with vban_recv.py on the transcription appliance.
 """
 
 import argparse
+import math
 import logging
 import queue
 import signal
@@ -147,6 +148,50 @@ def to_mono(data: np.ndarray) -> np.ndarray:
     return data.mean(axis=1, keepdims=True)
 
 
+class AudioLevelMeter:
+    """Track RMS and peak levels between periodic log snapshots."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sum_squares = 0.0
+        self._peak = 0.0
+        self._sample_count = 0
+
+    def observe(self, data: np.ndarray) -> None:
+        if data.size == 0:
+            return
+        arr = np.asarray(data, dtype=np.float32)
+        peak = float(np.max(np.abs(arr)))
+        sum_squares = float(np.sum(arr * arr))
+        sample_count = int(arr.size)
+        with self._lock:
+            self._sum_squares += sum_squares
+            self._peak = max(self._peak, peak)
+            self._sample_count += sample_count
+
+    def snapshot(self) -> tuple[float | None, float | None]:
+        with self._lock:
+            sample_count = self._sample_count
+            if sample_count == 0:
+                return None, None
+            rms = math.sqrt(self._sum_squares / sample_count)
+            peak = self._peak
+            self._sum_squares = 0.0
+            self._peak = 0.0
+            self._sample_count = 0
+        return linear_to_dbfs(rms), linear_to_dbfs(peak)
+
+
+def linear_to_dbfs(value: float) -> float | None:
+    if value <= 0:
+        return None
+    return 20.0 * math.log10(value)
+
+
+def format_dbfs(dbfs: float | None) -> str:
+    return "-inf dBFS" if dbfs is None else f"{dbfs:.1f} dBFS"
+
+
 # ---------------------------------------------------------------------------
 # Device Helpers
 # ---------------------------------------------------------------------------
@@ -221,6 +266,7 @@ def run_sender(
     frame_counter = 0
     packets_sent = 0
     running = True
+    level_meter = AudioLevelMeter()
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -239,6 +285,7 @@ def run_sender(
 
         # Downmix to mono regardless of device channel count
         mono = to_mono(indata)
+        level_meter.observe(mono)
 
         # Convert float32 → int16
         pcm = (mono * 32767).astype(np.int16)
@@ -280,7 +327,14 @@ def run_sender(
                 now = time.time()
                 if now - last_report >= 10:
                     pps = packets_sent / (now - last_report)
-                    logger.info(f"Stats: {packets_sent} packets sent ({pps:.0f}/s)")
+                    rms_dbfs, peak_dbfs = level_meter.snapshot()
+                    logger.info(
+                        "Stats: %s packets sent (%.0f/s) levels: captured rms=%s peak=%s",
+                        packets_sent,
+                        pps,
+                        format_dbfs(rms_dbfs),
+                        format_dbfs(peak_dbfs),
+                    )
                     packets_sent = 0
                     last_report = now
 
@@ -358,6 +412,9 @@ def run_sender_mixed(
     frame_counter = 0
     packets_sent = 0
     running = True
+    primary_meter = AudioLevelMeter()
+    mic_meter = AudioLevelMeter()
+    mixed_meter = AudioLevelMeter()
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -374,7 +431,9 @@ def run_sender_mixed(
             raise sd.CallbackAbort
         try:
             # Downmix to mono immediately in the callback
-            primary_q.put_nowait(to_mono(indata))
+            mono = to_mono(indata)
+            primary_meter.observe(mono)
+            primary_q.put_nowait(mono)
         except queue.Full:
             pass  # drop oldest data rather than blocking the audio thread
 
@@ -385,7 +444,9 @@ def run_sender_mixed(
             raise sd.CallbackAbort
         try:
             # Downmix to mono immediately in the callback
-            mic_q.put_nowait(to_mono(indata))
+            mono = to_mono(indata)
+            mic_meter.observe(mono)
+            mic_q.put_nowait(mono)
         except queue.Full:
             pass
 
@@ -418,6 +479,7 @@ def run_sender_mixed(
             # Mix: sum both streams, apply mic gain, clip to [-1, 1]
             mixed = primary_data + (mic_data * mic_gain)
             mixed = np.clip(mixed, -1.0, 1.0)
+            mixed_meter.observe(mixed)
 
             # Convert float32 → int16
             pcm = (mixed * 32767).astype(np.int16)
@@ -474,9 +536,29 @@ def run_sender_mixed(
                     pps = packets_sent / (now - last_report)
                     pq = primary_q.qsize()
                     mq = mic_q.qsize()
+                    primary_rms, primary_peak = primary_meter.snapshot()
+                    mic_rms, mic_peak = mic_meter.snapshot()
+                    mixed_rms, mixed_peak = mixed_meter.snapshot()
+                    warning = ""
+                    if primary_rms is None:
+                        warning = " WARNING: primary input is silent; check SoundSource/BlackHole routing"
+                    elif primary_rms <= -55.0:
+                        warning = " WARNING: primary input is very low; check SoundSource/BlackHole routing and app output level"
                     logger.info(
-                        f"Stats: {packets_sent} pkts ({pps:.0f}/s) "
-                        f"queues: primary={pq} mic={mq}"
+                        "Stats: %s pkts (%.0f/s) queues: primary=%s mic=%s "
+                        "levels: primary rms=%s peak=%s mic rms=%s peak=%s "
+                        "mixed rms=%s peak=%s%s",
+                        packets_sent,
+                        pps,
+                        pq,
+                        mq,
+                        format_dbfs(primary_rms),
+                        format_dbfs(primary_peak),
+                        format_dbfs(mic_rms),
+                        format_dbfs(mic_peak),
+                        format_dbfs(mixed_rms),
+                        format_dbfs(mixed_peak),
+                        warning,
                     )
                     packets_sent = 0
                     last_report = now

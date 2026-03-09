@@ -6,7 +6,7 @@ set -euo pipefail
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
 WHISPER_DIR="$HOME/whisper.cpp"
-MODEL="large-v3"
+MODEL="small.en-tdrz"
 
 echo "--- Setting up whisper.cpp ---"
 

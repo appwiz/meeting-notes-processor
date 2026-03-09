@@ -27,7 +27,7 @@ This guide covers both the **client** (your laptop) and the **server** (the tran
 │                                                                     │
 │  transcriber.py (FastAPI on port 8000):                             │
 │    UDP :6980 ─► VBANCapture ─► WAV file                             │
-│    WAV file ─► whisper.cpp (large-v3, Metal GPU) ─► transcript      │
+│    WAV file ─► whisper.cpp (small.en-tdrz, Metal GPU) ─► transcript │
 │    transcript ─► POST to meetingnotesd webhook                      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -74,7 +74,7 @@ make provision
 This runs four scripts in order:
 1. **01-homebrew.sh** — Installs Homebrew on pilot
 2. **02-dependencies.sh** — Installs ffmpeg and uv
-3. **03-whisper.sh** — Clones, builds whisper.cpp with Metal support, downloads large-v3 model
+3. **03-whisper.sh** — Clones, builds whisper.cpp with Metal support, downloads the small.en-tdrz model
 4. **04-service.sh** — Installs and loads the `com.transcriber` launchd service
 
 ### 1.2 Deploy the Transcriber
@@ -114,7 +114,7 @@ Environment variables (set in `com.transcriber.plist`):
 | `WEBHOOK_URL` | `http://nuctu:9876/webhook` | Where to POST transcripts |
 | `VBAN_PORT` | `6980` | UDP port for VBAN audio |
 | `WHISPER_CLI` | `~/whisper.cpp/build/bin/whisper-cli` | Path to whisper binary |
-| `WHISPER_MODEL` | `~/whisper.cpp/models/ggml-large-v3.bin` | Whisper model file |
+| `WHISPER_MODEL` | `~/whisper.cpp/models/ggml-small.en-tdrz.bin` | Whisper model file |
 | `RECORDINGS_DIR` | `~/transcriber/recordings` | Where WAV files are stored |
 | `TRANSCRIBER_HOST` | `0.0.0.0` | Listen address |
 | `TRANSCRIBER_PORT` | `8000` | HTTP API port |
@@ -343,7 +343,7 @@ ssh edd@pilot "launchctl list | grep transcriber"
 
 ### Transcription quality issues
 
-- whisper.cpp with large-v3 on M1 is generally excellent
+- whisper.cpp with `small.en-tdrz` is the intended pilot configuration because it emits tinydiarize speaker-turn markers
 - Very short recordings (< 3s) may produce empty output
 - Check WAV quality: `ssh edd@pilot "python3 -c \"import wave; w=wave.open('<path>'); print(f'{w.getframerate()}Hz {w.getnframes()/w.getframerate():.1f}s')\""`
 
@@ -402,4 +402,4 @@ The laptop and pilot communicate over Tailscale. Ensure both machines are on the
 | `~/Library/Logs/transcriber.log` | Service log |
 | `~/Library/LaunchAgents/com.transcriber.plist` | launchd plist |
 | `~/whisper.cpp/` | whisper.cpp source and build |
-| `~/whisper.cpp/models/ggml-large-v3.bin` | Whisper model (~3GB) |
+| `~/whisper.cpp/models/ggml-small.en-tdrz.bin` | Whisper tinydiarize model |
