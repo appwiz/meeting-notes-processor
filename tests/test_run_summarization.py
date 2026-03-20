@@ -476,6 +476,18 @@ class TestBuildCalendarAwarePrompt:
         
         assert 'Past meeting with Joe discussed project updates' in result
 
+    def test_distinguishes_generic_and_explicit_speaker_markers(self):
+        """Should explain that [S] is generic while [speaker:Edd] is trusted."""
+        result = run_summarization.build_calendar_aware_prompt(
+            base_prompt='Test prompt',
+            calendar_text='1. [15:00-15:30] Edd / Joe',
+            meeting_date='2026-01-26',
+            notes_context=''
+        )
+
+        assert '`[S]`' in result
+        assert '`[speaker:Edd]`' in result
+
 
 class TestParseTranscriptHeader:
     """Tests for parse_transcript_header() function."""

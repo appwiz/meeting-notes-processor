@@ -14,8 +14,10 @@ Designed to be the single command you run when a meeting starts.
 
 When using BlackHole 2ch (recommended), the VBAN sender automatically
 opens two input streams — BlackHole for remote participant audio and your
-microphone for your voice — and mixes them together. No external audio
-routing software needed for mic capture.
+microphone for your voice — and sends them as separate stereo channels
+(remote on the left, mic on the right). No external audio routing
+software needed for mic capture, and the transcriber can explicitly mark
+the local speaker from the mic channel.
 
 Usage:
   uv run meeting.py start "Weekly Standup"       # begin recording
@@ -85,7 +87,8 @@ def find_best_device() -> tuple[str, str]:
     """Find the best available audio input device.
     
     Returns (device_name, quality) where quality is 'full' or 'partial'.
-    'full' means both sides of conversation (BlackHole + mic mixed in software).
+    'full' means both sides of conversation (BlackHole + mic captured with
+    speaker-preserving channels).
     'partial' means only remote participants (direct virtual device).
     """
     devices = sd.query_devices()

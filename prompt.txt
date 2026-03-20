@@ -20,6 +20,12 @@ Use these to help identify who is speaking — a new [S] means a
 different person is now talking. Use context and conversational flow
 to attribute statements to the correct participant.
 
+The transcript may also contain machine-generated labels like
+[speaker:Edd]. These are higher-confidence than ordinary transcript
+names: if you see [speaker:Edd], treat that speaker as Edd
+Wilder-James from that point until the next speaker-change marker or
+new explicit speaker label.
+
 The user's name is Edd, which you may hear as Ed. His full name is
 Edd Wilder-James.
 

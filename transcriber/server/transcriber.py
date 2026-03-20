@@ -27,6 +27,7 @@ API:
 
 import asyncio
 import logging
+import math
 import os
 import re
 import socket
@@ -54,6 +55,10 @@ VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))  # UDP port for VBAN audio packe
 RECORDING_MAX_AGE_DAYS = int(os.getenv("RECORDING_MAX_AGE_DAYS", "7"))  # Delete recordings older than this
 HOST = os.getenv("TRANSCRIBER_HOST", "0.0.0.0")
 PORT = int(os.getenv("TRANSCRIBER_PORT", "8000"))
+LOCAL_SPEAKER_LABEL = os.getenv("LOCAL_SPEAKER_LABEL", "Edd")
+LOCAL_SPEAKER_CHANNEL = int(os.getenv("LOCAL_SPEAKER_CHANNEL", "2"))
+LOCAL_SPEAKER_MIN_DBFS = float(os.getenv("LOCAL_SPEAKER_MIN_DBFS", "-38"))
+LOCAL_SPEAKER_DOMINANCE_DB = float(os.getenv("LOCAL_SPEAKER_DOMINANCE_DB", "6"))
 
 # Logging
 logging.basicConfig(
@@ -348,12 +353,139 @@ _TS_PARSE_RE = re.compile(
 )
 
 
+def _timestamp_parts_to_seconds(hours: str, minutes: str, seconds: str) -> float:
+    """Convert regex-captured timestamp parts to seconds."""
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def _rms_to_dbfs(rms: float) -> float | None:
+    """Convert a PCM RMS value to dBFS."""
+    if rms <= 0:
+        return None
+    return 20.0 * math.log10(rms / 32767.0)
+
+
+class _LocalSpeakerChannelAnalyzer:
+    """Identify segments dominated by the local microphone channel."""
+
+    def __init__(self, audio_path: Path):
+        self.audio_path = audio_path
+        self._wav = wave.open(str(audio_path), "rb")
+        self.channels = self._wav.getnchannels()
+        self.sample_width = self._wav.getsampwidth()
+        self.sample_rate = self._wav.getframerate()
+        self.frame_count = self._wav.getnframes()
+
+    @property
+    def available(self) -> bool:
+        return self.sample_width == 2 and self.channels >= LOCAL_SPEAKER_CHANNEL
+
+    def close(self) -> None:
+        self._wav.close()
+
+    def is_local_speaker(self, start_sec: float, end_sec: float) -> bool:
+        """Return True when the local mic channel clearly dominates the segment."""
+        if not self.available:
+            return False
+
+        start_frame = max(0, int(start_sec * self.sample_rate))
+        end_frame = min(self.frame_count, max(start_frame + 1, int(end_sec * self.sample_rate)))
+        if end_frame <= start_frame:
+            return False
+
+        self._wav.setpos(start_frame)
+        raw = self._wav.readframes(end_frame - start_frame)
+        if not raw:
+            return False
+
+        samples = memoryview(raw).cast("h")
+        channel_energy = [0.0] * self.channels
+        channel_counts = [0] * self.channels
+        for idx, sample in enumerate(samples):
+            channel = idx % self.channels
+            channel_energy[channel] += sample * sample
+            channel_counts[channel] += 1
+
+        rms_values: list[float] = []
+        for energy, count in zip(channel_energy, channel_counts):
+            rms_values.append(math.sqrt(energy / count) if count else 0.0)
+
+        local_index = LOCAL_SPEAKER_CHANNEL - 1
+        local_rms = rms_values[local_index]
+        local_dbfs = _rms_to_dbfs(local_rms)
+        if local_dbfs is None or local_dbfs < LOCAL_SPEAKER_MIN_DBFS:
+            return False
+
+        other_rms_values = [rms for i, rms in enumerate(rms_values) if i != local_index]
+        other_rms = max(other_rms_values, default=0.0)
+        if other_rms <= 0:
+            return True
+
+        dominance_db = 20.0 * math.log10(local_rms / other_rms)
+        return dominance_db >= LOCAL_SPEAKER_DOMINANCE_DB
+
+
+def _annotate_local_speaker_segments(transcript: str, audio_path: Path) -> str:
+    """Insert explicit local-speaker labels when the mic channel dominates."""
+    try:
+        analyzer = _LocalSpeakerChannelAnalyzer(audio_path)
+    except (FileNotFoundError, OSError, wave.Error) as e:
+        logger.warning(f"Local speaker analysis unavailable for {audio_path.name}: {e}")
+        return transcript
+
+    if not analyzer.available:
+        analyzer.close()
+        return transcript
+
+    lines = transcript.split("\n")
+    result: list[str] = []
+    seen_timestamped_line = False
+    labels_added = 0
+
+    try:
+        for line in lines:
+            m = _TS_PARSE_RE.match(line)
+            if not m:
+                result.append(line)
+                continue
+
+            h1, m1, s1, h2, m2, s2, text = m.groups()
+            start_sec = _timestamp_parts_to_seconds(h1, m1, s1)
+            end_sec = _timestamp_parts_to_seconds(h2, m2, s2)
+            stripped = text.strip()
+            has_turn_marker = "[SPEAKER_TURN]" in stripped
+            bare_text = stripped.replace("[SPEAKER_TURN]", "").strip()
+
+            if analyzer.is_local_speaker(start_sec, end_sec) and (has_turn_marker or not seen_timestamped_line):
+                stripped = f"[speaker:{LOCAL_SPEAKER_LABEL}] {bare_text}".strip()
+                labels_added += 1
+            elif has_turn_marker:
+                stripped = f"[SPEAKER_TURN] {bare_text}".strip()
+            else:
+                stripped = bare_text
+
+            prefix = f"[{h1}:{m1}:{s1} --> {h2}:{m2}:{s2}]"
+            result.append(f"{prefix}   {stripped}" if stripped else prefix)
+            seen_timestamped_line = True
+    finally:
+        analyzer.close()
+
+    if labels_added:
+        logger.info(
+            "Annotated %d transcript segment(s) as %s using the local mic channel",
+            labels_added,
+            LOCAL_SPEAKER_LABEL,
+        )
+    return "\n".join(result)
+
+
 def _strip_timestamps_with_gaps(transcript: str) -> str:
-    """Strip timestamp prefixes and convert [SPEAKER_TURN] markers to [S].
+    """Strip timestamp prefixes and normalize speaker markers.
 
     Converts timestamped whisper output (with tinydiarize speaker turn
     markers) into plain text. Each [SPEAKER_TURN] token is replaced with
     an [S] marker that the downstream LLM uses to distinguish speakers.
+    Explicit speaker labels like [speaker:Edd] are preserved.
     """
     lines = transcript.split("\n")
     result: list[str] = []
@@ -422,6 +554,7 @@ async def _transcribe(recording: Recording) -> None:
             return
 
         transcript_text = _remove_hallucinated_lines(raw_text)
+        transcript_text = _annotate_local_speaker_segments(transcript_text, recording.audio_path)
         transcript_text = _strip_timestamps_with_gaps(transcript_text)
 
         # Write cleaned transcript to file

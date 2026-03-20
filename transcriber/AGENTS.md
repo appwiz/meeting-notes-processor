@@ -130,6 +130,10 @@ or mDNS).
 | `VBAN_PORT` | `6980` | |
 | `TRANSCRIBER_HOST` | `0.0.0.0` | |
 | `TRANSCRIBER_PORT` | `8000` | |
+| `LOCAL_SPEAKER_LABEL` | `Edd` | Label emitted for the local mic channel |
+| `LOCAL_SPEAKER_CHANNEL` | `2` | 1-based channel index for the local mic in stereo captures |
+| `LOCAL_SPEAKER_MIN_DBFS` | `-38` | Minimum mic level required before labeling a segment |
+| `LOCAL_SPEAKER_DOMINANCE_DB` | `6` | Required dB lead over other channels to label the local speaker |
 
 ### meeting_bar.py (laptop)
 
@@ -148,6 +152,10 @@ or mDNS).
   Timestamps are enabled (no `--no-timestamps` flag).
 - **Metal GPU**: whisper.cpp is built with Metal acceleration on the M1.
 - **Tinydiarize (`-tdrz`)**: Required for downstream speaker-turn markers.
+- **Local speaker labeling**: In dual-input mode, the laptop now sends remote
+  audio on the left channel and the local mic on the right channel. The
+  transcriber annotates high-confidence mic-dominant segments as
+  `[speaker:Edd]` before handing the transcript to the summarizer.
 
 ## Meeting Detection — Key Constraints
 

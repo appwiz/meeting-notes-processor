@@ -24,8 +24,10 @@ Run with: uv run pytest tests/test_transcription_queue.py -v
 import asyncio
 import importlib
 import os
+import struct
 import sys
 import time
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -53,6 +55,15 @@ def _make_recording(title: str = "Test Meeting", tmp_path: Path = None) -> trans
     rec = transcriber.Recording(title=title, audio_path=audio_path)
     rec.meeting_end = datetime.now(timezone.utc)
     return rec
+
+
+def _write_stereo_wav(path: Path, frames: list[tuple[int, int]], sample_rate: int = 100) -> None:
+    """Write a small stereo PCM WAV for channel-dominance tests."""
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(2)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(struct.pack("<hh", left, right) for left, right in frames))
 
 
 def test_default_whisper_model_matches_docs(monkeypatch):
@@ -557,6 +568,54 @@ class TestStripTimestampsWithGaps:
         assert lines[2] == "Sure, go ahead."
         assert lines[3] == "OK I've sent it. [S]"
         assert lines[5] == "Right. [S]"
+
+
+class TestAnnotateLocalSpeakerSegments:
+    """Tests for local-speaker channel annotation."""
+
+    def test_labels_first_local_segment(self, tmp_path, monkeypatch):
+        audio_path = tmp_path / "speaker.wav"
+        _write_stereo_wav(
+            audio_path,
+            [(100, 10000)] * 100 + [(10000, 100)] * 100,
+        )
+        transcript = (
+            "[00:00:00.000 --> 00:00:01.000]   Opening thought.\n"
+            "[00:00:01.000 --> 00:00:02.000]   [SPEAKER_TURN] Reply from the other side."
+        )
+
+        monkeypatch.setattr(transcriber, "LOCAL_SPEAKER_LABEL", "Edd")
+        monkeypatch.setattr(transcriber, "LOCAL_SPEAKER_CHANNEL", 2)
+        monkeypatch.setattr(transcriber, "LOCAL_SPEAKER_MIN_DBFS", -40.0)
+        monkeypatch.setattr(transcriber, "LOCAL_SPEAKER_DOMINANCE_DB", 6.0)
+
+        annotated = transcriber._annotate_local_speaker_segments(transcript, audio_path)
+
+        assert "[speaker:Edd] Opening thought." in annotated
+        assert "[SPEAKER_TURN] Reply from the other side." in annotated
+
+    def test_leaves_mono_audio_unmodified(self, tmp_path):
+        audio_path = tmp_path / "mono.wav"
+        with wave.open(str(audio_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(100)
+            wav_file.writeframes(b"".join(struct.pack("<h", 1000) for _ in range(100)))
+
+        transcript = "[00:00:00.000 --> 00:00:01.000]   Hello there."
+        annotated = transcriber._annotate_local_speaker_segments(transcript, audio_path)
+
+        assert annotated == transcript
+
+    def test_strip_preserves_explicit_speaker_labels(self):
+        transcript = (
+            "[00:00:00.000 --> 00:00:05.000]   [speaker:Edd] Hello there.\n"
+            "[00:00:05.000 --> 00:00:10.000]   [SPEAKER_TURN] Sounds good."
+        )
+
+        stripped = transcriber._strip_timestamps_with_gaps(transcript)
+
+        assert stripped == "[speaker:Edd] Hello there.\n[S] Sounds good."
 
 
 if __name__ == "__main__":

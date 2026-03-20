@@ -12,15 +12,17 @@ VBAN Sender — streams audio from a macOS audio device over UDP.
 Captures audio from Zoom/Teams virtual audio devices (or any input device)
 and sends it as VBAN protocol packets to a remote receiver.
 
-Supports dual-input mixing: capture from a primary device (e.g., BlackHole 2ch
-for remote participants) AND a microphone (for your voice), mix them together,
-and send the combined stream. This eliminates the need for external audio
-routing software to capture both sides of a conversation.
+Supports dual-input capture: capture from a primary device (e.g., BlackHole 2ch
+for remote participants) AND a microphone (for your voice), keep them as
+separate mono channels, and send the combined stereo stream. This eliminates
+the need for external audio routing software to capture both sides of a
+conversation and preserves a reliable local-speaker channel for downstream
+speaker labeling.
 
 Usage:
   uv run vban_send.py                              # list devices, then start with defaults
   uv run vban_send.py -d ZoomAudioDevice -t pilot   # stream Zoom audio to pilot
-  uv run vban_send.py -d "BlackHole 2ch" --mic Yeti -t pilot  # mix BlackHole + mic
+  uv run vban_send.py -d "BlackHole 2ch" --mic Yeti -t pilot  # remote on left, mic on right
   uv run vban_send.py --list-devices                # just list available input devices
 
 The VBAN protocol sends PCM audio in UDP packets with a 28-byte header.
@@ -362,16 +364,18 @@ def run_sender_mixed(
     stream_name: str,
     mic_gain: float = 1.0,
 ):
-    """Capture from two audio inputs, mix them, and send VBAN packets.
+    """Capture from two audio inputs and send a speaker-preserving stereo stream.
 
     This opens two InputStream objects simultaneously — one for the primary
     device (e.g., BlackHole 2ch carrying remote participant audio from
     Zoom/Teams) and one for the microphone (capturing the local user's voice).
-    The two streams are mixed together into mono and sent as a single VBAN
-    stream.
+    The two streams are each downmixed to mono, then packed into a stereo
+    stream:
+    - left channel: primary device (remote participants)
+    - right channel: microphone (local speaker)
 
     This eliminates the need for external audio routing to combine mic input
-    with app output — the mixing happens entirely in software.
+    with app output while preserving a reliable local-speaker channel.
     """
     # Resolve devices
     if isinstance(primary_device, str):
@@ -392,8 +396,13 @@ def run_sender_mixed(
     logger.info(f"Primary device: [{primary_idx}] {primary_info['name']} ({primary_channels}ch native)")
     logger.info(f"Mic device:     [{mic_idx}] {mic_info['name']} ({mic_channels}ch native)")
     logger.info(f"Target: {target_host}:{target_port} stream={stream_name}")
+    if channels != 2:
+        logger.info(
+            "Dual-input mode forces 2 output channels so downstream code can "
+            "separate remote audio from the local mic."
+        )
     logger.info(
-        f"Format: {sample_rate}Hz, mono out, int16, "
+        f"Format: {sample_rate}Hz, stereo out (left=remote, right=mic), int16, "
         f"{SAMPLES_PER_PACKET} samples/pkt, mic_gain={mic_gain}"
     )
 
@@ -414,7 +423,7 @@ def run_sender_mixed(
     running = True
     primary_meter = AudioLevelMeter()
     mic_meter = AudioLevelMeter()
-    mixed_meter = AudioLevelMeter()
+    output_meter = AudioLevelMeter()
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -451,7 +460,7 @@ def run_sender_mixed(
             pass
 
     def mixer_thread():
-        """Read from both queues, mix, and send VBAN packets."""
+        """Read from both queues, align them, and send stereo VBAN packets."""
         nonlocal frame_counter, packets_sent
 
         while running:
@@ -476,13 +485,15 @@ def run_sender_mixed(
             elif mlen > plen:
                 mic_data = mic_data[:plen]
 
-            # Mix: sum both streams, apply mic gain, clip to [-1, 1]
-            mixed = primary_data + (mic_data * mic_gain)
-            mixed = np.clip(mixed, -1.0, 1.0)
-            mixed_meter.observe(mixed)
+            # Preserve speaker separation: remote audio on the left channel,
+            # local microphone on the right channel.
+            primary_mono = primary_data[:, 0]
+            mic_mono = np.clip(mic_data[:, 0] * mic_gain, -1.0, 1.0)
+            output = np.column_stack((primary_mono, mic_mono))
+            output_meter.observe(output)
 
             # Convert float32 → int16
-            pcm = (mixed * 32767).astype(np.int16)
+            pcm = (output * 32767).astype(np.int16)
 
             # Send in chunks of SAMPLES_PER_PACKET
             offset = 0
@@ -491,7 +502,7 @@ def run_sender_mixed(
                 actual_samples = len(chunk)
 
                 header = build_header(
-                    sr_idx, actual_samples, 1, frame_counter, stream_name
+                    sr_idx, actual_samples, 2, frame_counter, stream_name
                 )
                 packet = header + chunk.tobytes()
 
@@ -526,7 +537,7 @@ def run_sender_mixed(
         ):
             mixer.start()
             logger.info(
-                "🎙  Streaming (mixed mode)... (Ctrl+C to stop)"
+                "🎙  Streaming (speaker-preserving mode)... (Ctrl+C to stop)"
             )
             last_report = time.time()
             while running:
@@ -538,7 +549,7 @@ def run_sender_mixed(
                     mq = mic_q.qsize()
                     primary_rms, primary_peak = primary_meter.snapshot()
                     mic_rms, mic_peak = mic_meter.snapshot()
-                    mixed_rms, mixed_peak = mixed_meter.snapshot()
+                    output_rms, output_peak = output_meter.snapshot()
                     warning = ""
                     if primary_rms is None:
                         warning = " WARNING: primary input is silent; check SoundSource/BlackHole routing"
@@ -547,7 +558,7 @@ def run_sender_mixed(
                     logger.info(
                         "Stats: %s pkts (%.0f/s) queues: primary=%s mic=%s "
                         "levels: primary rms=%s peak=%s mic rms=%s peak=%s "
-                        "mixed rms=%s peak=%s%s",
+                        "output rms=%s peak=%s%s",
                         packets_sent,
                         pps,
                         pq,
@@ -556,8 +567,8 @@ def run_sender_mixed(
                         format_dbfs(primary_peak),
                         format_dbfs(mic_rms),
                         format_dbfs(mic_peak),
-                        format_dbfs(mixed_rms),
-                        format_dbfs(mixed_peak),
+                        format_dbfs(output_rms),
+                        format_dbfs(output_peak),
                         warning,
                     )
                     packets_sent = 0

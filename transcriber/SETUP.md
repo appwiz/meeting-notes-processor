@@ -28,6 +28,7 @@ This guide covers both the **client** (your laptop) and the **server** (the tran
 │  transcriber.py (FastAPI on port 8000):                             │
 │    UDP :6980 ─► VBANCapture ─► WAV file                             │
 │    WAV file ─► whisper.cpp (small.en-tdrz, Metal GPU) ─► transcript │
+│              └► channel analysis ─► [speaker:Edd] labels            │
 │    transcript ─► POST to meetingnotesd webhook                      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -118,6 +119,10 @@ Environment variables (set in `com.transcriber.plist`):
 | `RECORDINGS_DIR` | `~/transcriber/recordings` | Where WAV files are stored |
 | `TRANSCRIBER_HOST` | `0.0.0.0` | Listen address |
 | `TRANSCRIBER_PORT` | `8000` | HTTP API port |
+| `LOCAL_SPEAKER_LABEL` | `Edd` | Label emitted for the local mic channel |
+| `LOCAL_SPEAKER_CHANNEL` | `2` | 1-based local mic channel in stereo captures |
+| `LOCAL_SPEAKER_MIN_DBFS` | `-38` | Minimum mic level to label a segment |
+| `LOCAL_SPEAKER_DOMINANCE_DB` | `6` | Required dB lead over the other channel |
 
 ---
 
@@ -344,6 +349,7 @@ ssh edd@pilot "launchctl list | grep transcriber"
 ### Transcription quality issues
 
 - whisper.cpp with `small.en-tdrz` is the intended pilot configuration because it emits tinydiarize speaker-turn markers
+- In dual-input mode, the laptop sends remote audio on the left channel and the local mic on the right channel so the transcriber can emit `[speaker:Edd]` labels for high-confidence local speech
 - Very short recordings (< 3s) may produce empty output
 - Check WAV quality: `ssh edd@pilot "python3 -c \"import wave; w=wave.open('<path>'); print(f'{w.getframerate()}Hz {w.getnframes()/w.getframerate():.1f}s')\""`
 

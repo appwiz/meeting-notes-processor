@@ -106,6 +106,12 @@ You have access to the user's calendar for this date. Use this to:
 
 The transcript speaker labels are OFTEN WRONG due to transcription errors. Use this logic:
 
+- Generic `[S]` markers only mean "speaker changed here" and do not identify anyone.
+- Explicit labels like `[speaker:Edd]` are machine-generated identity hints and are much
+  more reliable than ordinary transcript names or raw ASR guesses.
+- Calendar participants remain authoritative for the full participant list and for any
+  speakers who do not have an explicit `[speaker:Name]` label.
+
 ### Step 1: Cross-reference speakers with calendar
 - Look at who speaks in the transcript
 - Compare with calendar entries for this date/time
