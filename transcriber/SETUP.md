@@ -121,8 +121,8 @@ Environment variables (set in `com.transcriber.plist`):
 | `TRANSCRIBER_PORT` | `8000` | HTTP API port |
 | `LOCAL_SPEAKER_LABEL` | `Edd` | Label emitted for the local mic channel |
 | `LOCAL_SPEAKER_CHANNEL` | `2` | 1-based local mic channel in stereo captures |
-| `LOCAL_SPEAKER_MIN_DBFS` | `-38` | Minimum mic level to label a segment |
-| `LOCAL_SPEAKER_DOMINANCE_DB` | `6` | Required dB lead over the other channel |
+| `LOCAL_SPEAKER_MIN_DBFS` | `-40` | Minimum mic level to label a segment |
+| `LOCAL_SPEAKER_DOMINANCE_DB` | `4.5` | Required dB lead over the other channel |
 
 ---
 

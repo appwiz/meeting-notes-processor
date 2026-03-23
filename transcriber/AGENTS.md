@@ -132,8 +132,8 @@ or mDNS).
 | `TRANSCRIBER_PORT` | `8000` | |
 | `LOCAL_SPEAKER_LABEL` | `Edd` | Label emitted for the local mic channel |
 | `LOCAL_SPEAKER_CHANNEL` | `2` | 1-based channel index for the local mic in stereo captures |
-| `LOCAL_SPEAKER_MIN_DBFS` | `-38` | Minimum mic level required before labeling a segment |
-| `LOCAL_SPEAKER_DOMINANCE_DB` | `6` | Required dB lead over other channels to label the local speaker |
+| `LOCAL_SPEAKER_MIN_DBFS` | `-40` | Minimum mic level required before labeling a segment |
+| `LOCAL_SPEAKER_DOMINANCE_DB` | `4.5` | Required dB lead over other channels to label the local speaker |
 
 ### meeting_bar.py (laptop)
 
