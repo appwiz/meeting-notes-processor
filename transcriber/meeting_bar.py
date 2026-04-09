@@ -210,28 +210,24 @@ def _physical_mic_active() -> bool:
 def detect_teams_meeting() -> bool:
     """Check if Teams is in an active call (for START detection).
 
-    New Teams (2.x) doesn't expose meeting titles via CGWindowListCopyWindowInfo
-    (all titles are empty) and maintains hundreds of UDP sockets even when idle.
-    AVCaptureDevice.isInUseByAnotherApplication() also misses Teams calls because
-    Teams uses CoreAudio directly.
-
-    Instead, we detect active calls by checking two conditions:
-      1. MSTeams process is running
-      2. A physical microphone has active CoreAudio I/O (via mic_active helper)
+    Uses audiomxd to check if MSTeams itself has an active recording session,
+    rather than checking if any physical mic is active.  This correctly
+    ignores other apps that open the mic (e.g. Handy dictation, audio
+    recorders) while MSTeams is running but idle.
 
     WARNING: This check is only reliable for START detection. Once our VBAN
-    sender is running, it keeps the mic active, so this always returns True.
-    For END detection while recording, use _teams_audio_session_active() instead.
+    sender is running, it keeps its own audio session, so end detection uses
+    _teams_audio_session_active() (which uses the conservative True default).
     """
     try:
-        # Check if MSTeams is running
         result = subprocess.run(
             ["pgrep", "-x", "MSTeams"], capture_output=True, timeout=3,
         )
         if result.returncode != 0:
             return False
-        # Check if a physical microphone has active I/O
-        return _physical_mic_active()
+        # Check if MSTeams specifically has an active recording session.
+        # default_if_no_entries=False: absence of recent evidence means idle.
+        return _audiomxd_session_active("MSTeams", default_if_no_entries=False)
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -286,18 +282,11 @@ def _teams_audio_session_active() -> bool:
 def detect_edge_teams_meeting() -> bool:
     """Check if Teams PWA (running in Edge) is in an active call.
 
-    The Teams PWA runs inside Microsoft Edge. We detect calls by querying
-    the audiomxd system log for Edge helper audio sessions with active
-    recording state — the same technique used for native Teams detection.
-
-    Uses default_if_no_entries=False so that no recent audiomxd evidence
-    means "not recording" rather than "assume still recording".  This avoids
-    false positives from stale log entries (e.g. a call that ended >120s ago
-    without logging isRecording: false).
+    Uses audiomxd to check if Microsoft Edge has an active recording session.
+    default_if_no_entries=False means no recent evidence → not in a call,
+    avoiding false positives from stale entries or other apps using the mic.
     """
-    if not _audiomxd_session_active("Microsoft Edge", default_if_no_entries=False):
-        return False
-    return _physical_mic_active()
+    return _audiomxd_session_active("Microsoft Edge", default_if_no_entries=False)
 
 
 def detect_meeting() -> str | None:
