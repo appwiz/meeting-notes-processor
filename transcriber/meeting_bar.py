@@ -57,6 +57,11 @@ TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "http://pilot:8000")
 PILOT_HOST = os.getenv("PILOT_HOST", "pilot")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
+# EdgeTeams detection requires this many consecutive positive polls before
+# triggering a recording start (each poll is POLL_INTERVAL seconds).
+# Default 3 = 15 seconds of sustained detection, which filters out transient
+# mic probes by the Teams PWA (connectivity checks, PWA startup, etc.).
+EDGE_CONFIRM_POLLS = int(os.getenv("EDGE_CONFIRM_POLLS", "3"))
 
 # Calendar org file for meeting title lookup (optional)
 CALENDAR_ORG = os.getenv("MEETING_CALENDAR_ORG", os.path.expanduser("~/gtd/outlook.org"))
@@ -231,7 +236,7 @@ def detect_teams_meeting() -> bool:
         return False
 
 
-def _audiomxd_session_active(app_name: str) -> bool:
+def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) -> bool:
     """Check if an app has an active audio session via macOS audiomxd logs.
 
     Queries the system log for the most recent audio recording state for the
@@ -244,6 +249,13 @@ def _audiomxd_session_active(app_name: str) -> bool:
       - AVCaptureDevice doesn't see browser/Teams mic usage
 
     Takes ~1.5s to run, acceptable for 5s polling interval.
+
+    Args:
+        default_if_no_entries: Returned when no log entries are found in the
+            window.  Use True for END detection (conservative: assume call
+            is still active if no state change was logged recently, e.g.
+            ongoing call >120s with no interruption).  Use False for START
+            detection (no recent evidence of recording → not in a call).
     """
     try:
         result = subprocess.run(
@@ -259,10 +271,8 @@ def _audiomxd_session_active(app_name: str) -> bool:
                 return True
             if "isRecording: false" in line:
                 return False
-        # No log entries found — assume still active (conservative)
-        # This handles the case where the call has been going for >120s
-        # without an audio state change.
-        return True
+        # No log entries found — use caller-specified default.
+        return default_if_no_entries
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug(f"audiomxd log check failed: {e}")
         return True  # Fail-open: assume still active
@@ -280,11 +290,12 @@ def detect_edge_teams_meeting() -> bool:
     the audiomxd system log for Edge helper audio sessions with active
     recording state — the same technique used for native Teams detection.
 
-    To reduce false positives (Edge registers PlayAndRecord sessions
-    transiently when Teams PWA accesses mic without being in a call),
-    we also require that a physical microphone has active CoreAudio I/O.
+    Uses default_if_no_entries=False so that no recent audiomxd evidence
+    means "not recording" rather than "assume still recording".  This avoids
+    false positives from stale log entries (e.g. a call that ended >120s ago
+    without logging isRecording: false).
     """
-    if not _audiomxd_session_active("Microsoft Edge"):
+    if not _audiomxd_session_active("Microsoft Edge", default_if_no_entries=False):
         return False
     return _physical_mic_active()
 
@@ -501,6 +512,7 @@ class MeetingBarApp(rumps.App):
         self._busy = False  # True while start/stop in progress
         self._suppress_auto = False  # True after manual stop of auto-started recording
         self._pilot_text = "Pilot: checking…"
+        self._edge_confirm_count = 0  # consecutive EdgeTeams detection count for debounce
 
         # Menu — all items always have callbacks via @rumps.clicked.
         # Keep refs so we can update visibility via callAfter.
@@ -619,6 +631,22 @@ class MeetingBarApp(rumps.App):
 
         meeting_app = detect_meeting()
 
+        # Debounce EdgeTeams to filter transient mic probes by the Teams PWA.
+        # Require EDGE_CONFIRM_POLLS consecutive positive detections before
+        # treating it as a real call.  Reset count immediately on any non-Edge
+        # detection result.
+        if meeting_app == "EdgeTeams":
+            self._edge_confirm_count += 1
+            if self._edge_confirm_count < EDGE_CONFIRM_POLLS:
+                logger.debug(
+                    f"EdgeTeams tentative detection {self._edge_confirm_count}/{EDGE_CONFIRM_POLLS}"
+                )
+                meeting_app = None  # not confirmed yet
+        else:
+            if self._edge_confirm_count > 0:
+                logger.debug("EdgeTeams detection reset (not sustained)")
+            self._edge_confirm_count = 0
+
         with self._lock:
             is_recording = self._recording
             is_auto = self._recording_auto
@@ -695,6 +723,7 @@ class MeetingBarApp(rumps.App):
                 self._recording_app = app
                 self._recording_auto = auto
                 self._started_at = datetime.datetime.now()
+                self._edge_confirm_count = 0  # reset for next detection cycle
 
             self._schedule_ui_update()
             logger.info(f"Recording started: '{title}'")
