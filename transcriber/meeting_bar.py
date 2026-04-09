@@ -57,11 +57,11 @@ TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "http://pilot:8000")
 PILOT_HOST = os.getenv("PILOT_HOST", "pilot")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
-# EdgeTeams detection requires this many consecutive positive polls before
+# All app detections require this many consecutive positive polls before
 # triggering a recording start (each poll is POLL_INTERVAL seconds).
 # Default 3 = 15 seconds of sustained detection, which filters out transient
-# mic probes by the Teams PWA (connectivity checks, PWA startup, etc.).
-EDGE_CONFIRM_POLLS = int(os.getenv("EDGE_CONFIRM_POLLS", "3"))
+# mic probes (Teams/Edge connectivity checks, PWA startup, etc.).
+CONFIRM_POLLS = int(os.getenv("MEETING_CONFIRM_POLLS", "3"))
 
 # Calendar org file for meeting title lookup (optional)
 CALENDAR_ORG = os.getenv("MEETING_CALENDAR_ORG", os.path.expanduser("~/gtd/outlook.org"))
@@ -512,7 +512,8 @@ class MeetingBarApp(rumps.App):
         self._busy = False  # True while start/stop in progress
         self._suppress_auto = False  # True after manual stop of auto-started recording
         self._pilot_text = "Pilot: checking…"
-        self._edge_confirm_count = 0  # consecutive EdgeTeams detection count for debounce
+        self._confirm_app: str | None = None  # app being debounced
+        self._confirm_count = 0  # consecutive detection count for debounce
 
         # Menu — all items always have callbacks via @rumps.clicked.
         # Keep refs so we can update visibility via callAfter.
@@ -631,21 +632,26 @@ class MeetingBarApp(rumps.App):
 
         meeting_app = detect_meeting()
 
-        # Debounce EdgeTeams to filter transient mic probes by the Teams PWA.
-        # Require EDGE_CONFIRM_POLLS consecutive positive detections before
-        # treating it as a real call.  Reset count immediately on any non-Edge
-        # detection result.
-        if meeting_app == "EdgeTeams":
-            self._edge_confirm_count += 1
-            if self._edge_confirm_count < EDGE_CONFIRM_POLLS:
+        # Debounce all app types to filter transient mic probes.
+        # Require CONFIRM_POLLS consecutive detections of the SAME app before
+        # treating it as a real call.  Switching apps or going idle resets the
+        # count immediately.
+        if meeting_app is not None:
+            if meeting_app == self._confirm_app:
+                self._confirm_count += 1
+            else:
+                self._confirm_app = meeting_app
+                self._confirm_count = 1
+            if self._confirm_count < CONFIRM_POLLS:
                 logger.debug(
-                    f"EdgeTeams tentative detection {self._edge_confirm_count}/{EDGE_CONFIRM_POLLS}"
+                    f"{meeting_app} tentative detection {self._confirm_count}/{CONFIRM_POLLS}"
                 )
                 meeting_app = None  # not confirmed yet
         else:
-            if self._edge_confirm_count > 0:
-                logger.debug("EdgeTeams detection reset (not sustained)")
-            self._edge_confirm_count = 0
+            if self._confirm_count > 0:
+                logger.debug(f"{self._confirm_app} detection reset (not sustained)")
+            self._confirm_app = None
+            self._confirm_count = 0
 
         with self._lock:
             is_recording = self._recording
@@ -723,7 +729,8 @@ class MeetingBarApp(rumps.App):
                 self._recording_app = app
                 self._recording_auto = auto
                 self._started_at = datetime.datetime.now()
-                self._edge_confirm_count = 0  # reset for next detection cycle
+                self._confirm_app = None  # reset for next detection cycle
+                self._confirm_count = 0
 
             self._schedule_ui_update()
             logger.info(f"Recording started: '{title}'")
