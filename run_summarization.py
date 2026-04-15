@@ -370,11 +370,11 @@ def detect_multi_meeting(filepath: str, calendar_path: str = None,
           f"{overlapping_count} calendar entries")
     
     # Use LLM to detect meeting boundaries.
-    # Send the full transcript — haiku supports 200K tokens and even a 60K char
-    # transcript is only ~15K tokens. Sampling misses boundaries in the gaps.
-    transcript_for_prompt = body
+    # Reference the file by path instead of inlining transcript content,
+    # to avoid hitting Linux's per-argument size limit (MAX_ARG_STRLEN=128KB).
+    filepath_abs = os.path.abspath(filepath)
     
-    prompt = f"""Analyze this meeting transcript to determine if it contains MULTIPLE separate meetings recorded back-to-back (e.g., two consecutive 1:1s where recording wasn't stopped between them).
+    prompt = f"""Read the file at {filepath_abs} and analyze the meeting transcript to determine if it contains MULTIPLE separate meetings recorded back-to-back (e.g., two consecutive 1:1s where recording wasn't stopped between them).
 
 Signs of multiple meetings:
 - Goodbye/farewell exchanges followed by new greetings ("Bye!" then "Hello, how are you?")
@@ -387,9 +387,6 @@ Signs of a SINGLE meeting (do NOT split):
 - Brief pleasantries between agenda items
 
 {calendar_hint}
-
-TRANSCRIPT:
-{transcript_for_prompt}
 
 Respond with ONLY a JSON object, no other text:
 {{
@@ -1358,14 +1355,18 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     # --- Step 2: Detect and split multi-meeting transcripts ---
     final_files = []
     for transcript_file in filtered_files:
-        split_positions = detect_multi_meeting(
-            transcript_file, calendar_path=calendar_path,
-            target=target, model=model, debug=debug
-        )
-        if split_positions:
-            new_files = split_transcript(transcript_file, split_positions, paths)
-            final_files.extend(new_files)
-        else:
+        try:
+            split_positions = detect_multi_meeting(
+                transcript_file, calendar_path=calendar_path,
+                target=target, model=model, debug=debug
+            )
+            if split_positions:
+                new_files = split_transcript(transcript_file, split_positions, paths)
+                final_files.extend(new_files)
+            else:
+                final_files.append(transcript_file)
+        except Exception as e:
+            print(f"  Error in multi-meeting detection for {os.path.basename(transcript_file)}: {e}")
             final_files.append(transcript_file)
     
     if not final_files:
