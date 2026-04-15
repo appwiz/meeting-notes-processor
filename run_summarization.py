@@ -374,7 +374,7 @@ def detect_multi_meeting(filepath: str, calendar_path: str = None,
     # to avoid hitting Linux's per-argument size limit (MAX_ARG_STRLEN=128KB).
     filepath_abs = os.path.abspath(filepath)
     
-    prompt = f"""Read the file at {filepath_abs} and analyze the meeting transcript to determine if it contains MULTIPLE separate meetings recorded back-to-back (e.g., two consecutive 1:1s where recording wasn't stopped between them).
+    prompt = f"""Read the file at {filepath_abs} and analyze the meeting transcript to determine if it contains MULTIPLE separate meetings recorded back-to-back (e.g., two consecutive 1:1s where recording wasn't stopped between them). The file may begin with a YAML front matter header (between --- markers) containing metadata — focus your analysis on the transcript body that follows it.
 
 Signs of multiple meetings:
 - Goodbye/farewell exchanges followed by new greetings ("Bye!" then "Hello, how are you?")
