@@ -227,7 +227,9 @@ def detect_teams_meeting() -> bool:
             return False
         # Check if MSTeams specifically has an active recording session.
         # default_if_no_entries=False: absence of recent evidence means idle.
-        return _audiomxd_session_active("MSTeams", default_if_no_entries=False)
+        # audiomxd logs Teams as "Microsoft Teams" (the binary is "MSTeams",
+        # but that name does not appear in audiomxd log messages).
+        return _audiomxd_session_active("Microsoft Teams", default_if_no_entries=False)
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -276,7 +278,7 @@ def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) 
 
 def _teams_audio_session_active() -> bool:
     """Check if native Teams has an active audio session."""
-    return _audiomxd_session_active("MSTeams")
+    return _audiomxd_session_active("Microsoft Teams")
 
 
 def detect_edge_teams_meeting() -> bool:
