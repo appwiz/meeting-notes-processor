@@ -237,7 +237,7 @@ def detect_teams_meeting() -> bool:
 _AUDIOMXD_SESSION_RE = re.compile(
     r"sessionID:\s*(0x[0-9a-fA-F]+).*?isRecording:\s*(true|false)"
 )
-_AUDIOMXD_WINDOW_SECONDS = 1800  # 30 minutes
+_AUDIOMXD_WINDOW_SECONDS = 120
 
 
 def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) -> bool:
@@ -257,16 +257,16 @@ def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) 
         transition.
 
     Algorithm:
-      1. Fetch all audiomxd events in the last 30 min mentioning app_name and
+      1. Fetch all audiomxd events in the last 120s mentioning app_name and
          isRecording (these multi-line events include a bracketed summary
          'sessionID: 0x...  isRecording: true/false').
       2. Walk chronologically, recording the latest state per sessionID.
       3. Return True iff any tracked session's last state is True.
       4. If no sessions were parsed, return default_if_no_entries.
 
-    A 30-minute window is a pragmatic compromise: long enough to catch the
-    start transition for typical meetings (≤60 min, since end-detection runs
-    with default=True), short enough to avoid stale-true false positives.
+    A 120s window is enough for START detection (we poll every 5s, so we
+    catch the transition immediately) and for END detection (absence of
+    events → default_if_no_entries=True keeps the recording alive).
 
     Args:
         default_if_no_entries: Returned when no sessions are parsed (e.g. no
