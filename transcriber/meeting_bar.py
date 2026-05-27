@@ -234,46 +234,67 @@ def detect_teams_meeting() -> bool:
         return False
 
 
+_AUDIOMXD_SESSION_RE = re.compile(
+    r"sessionID:\s*(0x[0-9a-fA-F]+).*?isRecording:\s*(true|false)"
+)
+_AUDIOMXD_WINDOW_SECONDS = 1800  # 30 minutes
+
+
 def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) -> bool:
     """Check if an app has an active audio session via macOS audiomxd logs.
 
-    Queries the system log for the most recent audio recording state for the
-    given app name. The audiomxd daemon logs 'isRecording: true/false' whenever
-    an app starts or stops an audio session (call join/leave).
+    Queries the system log for audio session state transitions for the given
+    app name.  The audiomxd daemon logs 'isRecording: true/false' whenever an
+    app starts or stops an audio session (call join/leave).
 
-    This is the only reliable signal for meeting END detection because:
-      - mic_active always returns YES while our VBAN sender is running
-      - Window titles are unreliable for Teams 2.x and PWAs
-      - AVCaptureDevice doesn't see browser/Teams mic usage
+    Per-session state tracking is required because:
+      - Teams maintains multiple concurrent audio sessions (e.g. main session
+        plus helper sessions for different audio routes).  Just picking the
+        most recent isRecording event mixes sessions and can be masked by a
+        stale 'false' from a side session while the call session is 'true'.
+      - audiomxd is transition-driven, so a long call may produce zero events
+        in a short window.  We need a wide enough window to catch the start
+        transition.
 
-    Takes ~1.5s to run, acceptable for 5s polling interval.
+    Algorithm:
+      1. Fetch all audiomxd events in the last 30 min mentioning app_name and
+         isRecording (these multi-line events include a bracketed summary
+         'sessionID: 0x...  isRecording: true/false').
+      2. Walk chronologically, recording the latest state per sessionID.
+      3. Return True iff any tracked session's last state is True.
+      4. If no sessions were parsed, return default_if_no_entries.
+
+    A 30-minute window is a pragmatic compromise: long enough to catch the
+    start transition for typical meetings (≤60 min, since end-detection runs
+    with default=True), short enough to avoid stale-true false positives.
 
     Args:
-        default_if_no_entries: Returned when no log entries are found in the
-            window.  Use True for END detection (conservative: assume call
-            is still active if no state change was logged recently, e.g.
-            ongoing call >120s with no interruption).  Use False for START
-            detection (no recent evidence of recording → not in a call).
+        default_if_no_entries: Returned when no sessions are parsed (e.g. no
+            recent activity, or subprocess error).  Use True for END
+            detection (conservative: assume call still active if no info).
+            Use False for START detection (no evidence → not in a call).
     """
     try:
         result = subprocess.run(
-            ["log", "show", "--last", "120s",
+            ["log", "show", "--last", f"{_AUDIOMXD_WINDOW_SECONDS}s",
              "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}" AND eventMessage CONTAINS "isRecording"',
              "--style", "compact"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=15,
         )
-        # Find the last isRecording state
-        lines = result.stdout.strip().splitlines()
-        for line in reversed(lines):
-            if "isRecording: true" in line:
-                return True
-            if "isRecording: false" in line:
-                return False
-        # No log entries found — use caller-specified default.
-        return default_if_no_entries
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug(f"audiomxd log check failed: {e}")
-        return True  # Fail-open: assume still active
+        return default_if_no_entries
+
+    # Chronological scan; latest event per sessionID wins.
+    session_states: dict[str, bool] = {}
+    for line in result.stdout.splitlines():
+        m = _AUDIOMXD_SESSION_RE.search(line)
+        if m:
+            session_states[m.group(1).lower()] = (m.group(2) == "true")
+
+    if not session_states:
+        return default_if_no_entries
+    return any(session_states.values())
 
 
 def _teams_audio_session_active() -> bool:
