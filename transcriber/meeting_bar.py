@@ -229,7 +229,11 @@ def detect_teams_meeting() -> bool:
         # default_if_no_entries=False: absence of recent evidence means idle.
         # audiomxd logs Teams as "Microsoft Teams" (the binary is "MSTeams",
         # but that name does not appear in audiomxd log messages).
-        return _audiomxd_session_active("Microsoft Teams", default_if_no_entries=False)
+        return _audiomxd_session_active(
+            "Microsoft Teams",
+            default_if_no_entries=False,
+            use_cached_sessions=False,
+        )
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -238,9 +242,14 @@ _AUDIOMXD_SESSION_RE = re.compile(
     r"sessionID:\s*(0x[0-9a-fA-F]+).*?isRecording:\s*(true|false)"
 )
 _AUDIOMXD_WINDOW_SECONDS = 120
+_AUDIOMXD_SESSION_STATES: dict[str, dict[str, bool]] = {}
 
 
-def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) -> bool:
+def _audiomxd_session_active(
+    app_name: str,
+    default_if_no_entries: bool = True,
+    use_cached_sessions: bool = True,
+) -> bool:
     """Check if an app has an active audio session via macOS audiomxd logs.
 
     Queries the system log for audio session state transitions for the given
@@ -261,18 +270,26 @@ def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) 
          isRecording (these multi-line events include a bracketed summary
          'sessionID: 0x...  isRecording: true/false').
       2. Walk chronologically, recording the latest state per sessionID.
-      3. Return True iff any tracked session's last state is True.
-      4. If no sessions were parsed, return default_if_no_entries.
+      3. Merge parsed states into an app-level cache so a true session remains
+         active across polling windows until that same session reports false.
+      4. Return True iff any tracked session's last state is True.
+      5. If no sessions were parsed and no cache is used, return
+         default_if_no_entries.
 
-    A 120s window is enough for START detection (we poll every 5s, so we
-    catch the transition immediately) and for END detection (absence of
-    events → default_if_no_entries=True keeps the recording alive).
+    The cache matters for END detection: Teams often logs the real call
+    session's isRecording:true only at call start, then logs unrelated
+    "[implicit] Microsoft Teams" side sessions as isRecording:false. Without
+    remembering the true session, a later short polling window can contain
+    only the unrelated false events and stop a live recording.
 
     Args:
         default_if_no_entries: Returned when no sessions are parsed (e.g. no
             recent activity, or subprocess error).  Use True for END
             detection (conservative: assume call still active if no info).
             Use False for START detection (no evidence → not in a call).
+        use_cached_sessions: Include cached session state in the return value.
+            Use False for START detection to avoid stale positives from older
+            calls; use True for END detection to bridge quiet log windows.
     """
     try:
         result = subprocess.run(
@@ -293,7 +310,16 @@ def _audiomxd_session_active(app_name: str, default_if_no_entries: bool = True) 
             session_states[m.group(1).lower()] = (m.group(2) == "true")
 
     if not session_states:
+        cached = _AUDIOMXD_SESSION_STATES.get(app_name, {})
+        if use_cached_sessions and cached:
+            return any(cached.values())
         return default_if_no_entries
+
+    cached = _AUDIOMXD_SESSION_STATES.setdefault(app_name, {})
+    cached.update(session_states)
+
+    if use_cached_sessions:
+        return any(cached.values())
     return any(session_states.values())
 
 
@@ -309,7 +335,11 @@ def detect_edge_teams_meeting() -> bool:
     default_if_no_entries=False means no recent evidence → not in a call,
     avoiding false positives from stale entries or other apps using the mic.
     """
-    return _audiomxd_session_active("Microsoft Edge", default_if_no_entries=False)
+    return _audiomxd_session_active(
+        "Microsoft Edge",
+        default_if_no_entries=False,
+        use_cached_sessions=False,
+    )
 
 
 def detect_meeting() -> str | None:
