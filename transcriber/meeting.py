@@ -9,7 +9,7 @@
 """
 Meeting Recorder — one-command meeting capture and transcription.
 
-Manages the full pipeline: VBAN streaming → pilot recording → transcription.
+Manages the full pipeline: VBAN streaming → transcriber recording → transcription.
 Designed to be the single command you run when a meeting starts.
 
 When using BlackHole 2ch (recommended), the VBAN sender automatically
@@ -28,7 +28,7 @@ Usage:
 Prerequisites:
   - BlackHole 2ch installed on laptop
   - SoundSource routing Zoom/Teams output → BlackHole 2ch
-  - Transcriber running on pilot (make deploy)
+  - Transcriber running on the configured target host
 """
 
 import argparse
@@ -49,8 +49,9 @@ import sounddevice as sd
 # Configuration
 # ---------------------------------------------------------------------------
 
-TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "http://pilot:8000")
-PILOT_HOST = os.getenv("PILOT_HOST", "pilot")
+TRANSCRIBER_TARGET_HOST = os.getenv("TRANSCRIBER_TARGET_HOST", "pilot")
+TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", f"http://{TRANSCRIBER_TARGET_HOST}:8000")
+VBAN_TARGET_HOST = os.getenv("PILOT_HOST", TRANSCRIBER_TARGET_HOST)
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 
 # Audio device preference order (first match wins)
@@ -192,7 +193,7 @@ def start_sender(device: str, mic: str | None = None) -> int:
     cmd = [
         "uv", "run", str(VBAN_SEND_SCRIPT),
         "-d", device,
-        "-t", PILOT_HOST,
+        "-t", VBAN_TARGET_HOST,
         "-p", str(VBAN_PORT),
     ]
     if mic:
@@ -239,7 +240,7 @@ def stop_sender():
 
 
 def transcriber_status() -> dict | None:
-    """Get transcriber status from pilot."""
+    """Get transcriber status from the configured target."""
     try:
         r = requests.get(f"{TRANSCRIBER_URL}/status", timeout=5)
         return r.json()
@@ -249,7 +250,7 @@ def transcriber_status() -> dict | None:
 
 
 def transcriber_start(title: str) -> dict | None:
-    """Start recording on pilot."""
+    """Start recording on the configured target."""
     try:
         r = requests.post(
             f"{TRANSCRIBER_URL}/start",
@@ -267,7 +268,7 @@ def transcriber_start(title: str) -> dict | None:
 
 
 def transcriber_stop() -> dict | None:
-    """Stop recording on pilot."""
+    """Stop recording on the configured target."""
     try:
         r = requests.post(f"{TRANSCRIBER_URL}/stop", timeout=10)
         if r.status_code == 404:
@@ -292,7 +293,7 @@ def cmd_start(args):
     # 1. Check transcriber is reachable
     status = transcriber_status()
     if not status:
-        print("❌ Cannot reach transcriber on pilot. Is it running?")
+        print(f"❌ Cannot reach transcriber at {TRANSCRIBER_URL}. Is it running?")
         print(f"   Try: cd transcriber && make status")
         sys.exit(1)
 
@@ -341,11 +342,11 @@ def cmd_start(args):
     # Give VBAN a moment to connect
     time.sleep(3)
 
-    # 5. Start recording on pilot
+    # 5. Start recording on the transcriber
     print(f"🔴 Starting recording: {title}")
     result = transcriber_start(title)
     if result:
-        print(f"✅ Recording! Audio streaming to pilot.")
+        print(f"✅ Recording! Audio streaming to {VBAN_TARGET_HOST}:{VBAN_PORT}.")
         print(f"   Title: {title}")
         print(f"   Run 'uv run meeting.py stop' when done.")
     else:
@@ -356,7 +357,7 @@ def cmd_start(args):
 
 def cmd_stop(args):
     """Stop a meeting recording."""
-    # 1. Stop recording on pilot (triggers transcription)
+    # 1. Stop recording on the transcriber (triggers transcription)
     print("⏹  Stopping recording...")
     result = transcriber_stop()
     if result:

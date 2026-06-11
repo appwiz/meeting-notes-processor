@@ -1,21 +1,21 @@
 # Transcriber Setup Guide
 
-End-to-end setup for meeting transcription: laptop audio → VBAN streaming → Mac Mini transcription → webhook.
+End-to-end setup for meeting transcription: laptop audio → VBAN streaming → configurable transcription host → webhook.
 
-This guide covers both the **client** (your laptop) and the **server** (the transcription appliance, "pilot"), starting from scratch.
+This guide covers both the **client** (your laptop) and the **server**. The server can be either the transcription appliance ("pilot") or this laptop for local transcription.
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────── Your Laptop ─────────────────────────────────────────────┐
 │                                                                     │
 │  SoundSource:                                                       │
 │    Zoom/Teams audio ─┬─► Your speakers (you hear the meeting)       │
 │                      └─► BlackHole 2ch (captured for transcription) │
 │                                                                     │
-│  vban_send.py (launched by meeting.py):                             │
+│  vban_send.py (launched by meeting_bar.py / meeting.py):             │
 │    BlackHole 2ch ──► ┐                                              │
-│    (remote audio)    ├─ mix ─► VBAN UDP packets ─► pilot:6980       │
+│    (remote audio)    ├─ mix ─► VBAN UDP packets ─► target:6980      │
 │    Your mic ───────► ┘                                              │
 │    (your voice)                                                     │
 │                                                                     │
@@ -23,7 +23,7 @@ This guide covers both the **client** (your laptop) and the **server** (the tran
 
                         ▼  VBAN over Tailscale / LAN  ▼
 
-┌─────────── Pilot (Mac Mini M1) ─────────────────────────────────────┐
+┌─────────── Transcriber target (pilot or local laptop) ──────────────┐
 │                                                                     │
 │  transcriber.py (FastAPI on port 8000):                             │
 │    UDP :6980 ─► VBANCapture ─► WAV file                             │
@@ -43,10 +43,10 @@ This guide covers both the **client** (your laptop) and the **server** (the tran
 ## Prerequisites
 
 | Item | Where | Purpose |
-|------|-------|---------|
+| --- | --- | --- |
 | Mac with Apple Silicon | Laptop | Audio capture and VBAN streaming |
 | Xcode Command Line Tools | Laptop | Required for building `mic_active` Swift helper (`xcode-select --install`) |
-| Mac Mini M1+ | Server ("pilot") | Whisper transcription with Metal GPU |
+| Mac Mini M1+ | Optional server ("pilot") | Whisper transcription with Metal GPU |
 | [Tailscale](https://tailscale.com/) | Both | Secure networking between machines |
 | [BlackHole 2ch](https://existential.audio/blackhole/) | Laptop | Virtual audio device for routing |
 | [SoundSource](https://rogueamoeba.com/soundsource/) | Laptop | Per-app audio output routing |
@@ -73,6 +73,7 @@ make provision
 ```
 
 This runs four scripts in order:
+
 1. **01-homebrew.sh** — Installs Homebrew on pilot
 2. **02-dependencies.sh** — Installs ffmpeg and uv
 3. **03-whisper.sh** — Clones, builds whisper.cpp with Metal support, downloads the small.en-tdrz model
@@ -111,7 +112,7 @@ The transcriber captures VBAN audio directly — no BlackHole, no ffmpeg, no int
 Environment variables (set in `com.transcriber.plist`):
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| --- | --- | --- |
 | `WEBHOOK_URL` | `http://nuctu:9876/webhook` | Where to POST transcripts |
 | `VBAN_PORT` | `6980` | UDP port for VBAN audio |
 | `WHISPER_CLI` | `~/whisper.cpp/build/bin/whisper-cli` | Path to whisper binary |
@@ -119,6 +120,11 @@ Environment variables (set in `com.transcriber.plist`):
 | `RECORDINGS_DIR` | `~/transcriber/recordings` | Where WAV files are stored |
 | `TRANSCRIBER_HOST` | `0.0.0.0` | Listen address |
 | `TRANSCRIBER_PORT` | `8000` | HTTP API port |
+| `WHISPER_THREADS` | unset | Optional `whisper-cli -t` thread cap |
+| `WHISPER_NICE` | unset | Optional `nice -n` priority |
+| `WHISPER_TASKPOLICY_BACKGROUND` | `false` | Run Whisper with `taskpolicy -b` on macOS |
+| `TRANSCRIBE_WHILE_RECORDING` | `true` | If `false`, queued transcription waits while a new recording is active |
+| `TRANSCRIPTION_IDLE_DELAY_SECONDS` | `0` | Quiet window before transcription starts |
 | `LOCAL_SPEAKER_LABEL` | `Edd` | Label emitted for the local mic channel |
 | `LOCAL_SPEAKER_CHANNEL` | `2` | 1-based local mic channel in stereo captures |
 | `LOCAL_SPEAKER_MIN_DBFS` | `-40` | Minimum mic level to label a segment |
@@ -126,11 +132,86 @@ Environment variables (set in `com.transcriber.plist`):
 
 ---
 
-## Part 2: Client Setup (Laptop)
+## Part 2: Local Transcriber Setup (Optional)
 
-The laptop captures meeting audio and streams it to pilot via VBAN.
+Local mode keeps the same VBAN/API architecture, but runs `transcriber.py` on this laptop instead of pilot:
 
-### 2.1 Install BlackHole 2ch
+```javascript
+laptop meeting_bar.py ──VBAN──► 127.0.0.1:6980
+meeting_bar.py ──HTTP──► http://127.0.0.1:8000
+local transcriber ──webhook──► http://nuctu:9876/webhook
+```
+
+This is useful when you want everything to stay on the laptop, but Whisper must not compete aggressively with Teams. The local launchd plist runs Whisper with these safeguards:
+
+| Variable | Local value | Purpose |
+| --- | --- | --- |
+| `TRANSCRIBER_HOST` | `127.0.0.1` | Bind the API to localhost only |
+| `TRANSCRIBE_WHILE_RECORDING` | `false` | Do not start queued Whisper work during another meeting recording |
+| `TRANSCRIPTION_IDLE_DELAY_SECONDS` | `30` | Wait for a quiet window after recording stops |
+| `WHISPER_TASKPOLICY_BACKGROUND` | `true` | Put Whisper in macOS background scheduling policy |
+| `WHISPER_NICE` | `20` | Lowest CPU priority |
+| `WHISPER_THREADS` | `2` | Cap Whisper CPU threads |
+
+### 2.1 Install whisper.cpp locally
+
+The local transcriber expects the same default paths as pilot:
+
+```bash
+~/whisper.cpp/build/bin/whisper-cli
+~/whisper.cpp/models/ggml-small.en-tdrz.bin
+```
+
+You can reuse the setup script locally:
+
+```bash
+cd transcriber
+./setup/03-whisper.sh
+```
+
+### 2.2 Start the local transcriber
+
+```bash
+cd transcriber
+make local-transcriber-install
+make local-transcriber-status
+```
+
+Logs:
+
+```bash
+make local-transcriber-logs
+```
+
+### 2.3 Switch the menu bar to local mode
+
+```bash
+cd transcriber
+make meeting-bar-local
+```
+
+Switch back to pilot at any time:
+
+```bash
+make meeting-bar-pilot
+```
+
+The underlying configuration knob is `TRANSCRIBER_TARGET_HOST`. The menu bar derives both defaults from it:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TRANSCRIBER_TARGET_HOST` | `pilot` | Host for both HTTP API and VBAN |
+| `TRANSCRIBER_URL` | `http://$TRANSCRIBER_TARGET_HOST:8000` | Optional HTTP API override |
+| `PILOT_HOST` | `$TRANSCRIBER_TARGET_HOST` | Legacy VBAN target override |
+| `AUDIOMXD_END_QUERY_TTL_SECONDS` | `15` | Cache expensive Teams/Edge audiomxd log queries during end detection only; start detection still checks every poll |
+
+---
+
+## Part 3: Client Setup (Laptop)
+
+The laptop captures meeting audio and streams it to the configured transcription target via VBAN.
+
+### 3.1 Install BlackHole 2ch
 
 ```bash
 brew install --cask blackhole-2ch
@@ -139,13 +220,14 @@ brew install --cask blackhole-2ch
 **Reboot after installation** — the audio driver needs a restart to load.
 
 After rebooting, verify it appears:
+
 ```bash
 system_profiler SPAudioDataType | grep -i blackhole
 ```
 
 You should see "BlackHole 2ch" listed. Do **not** set it as your default audio device.
 
-### 2.2 Configure SoundSource
+### 3.2 Configure SoundSource
 
 SoundSource routes per-app audio output. We use it to send Zoom/Teams audio to BlackHole while you still hear it through your speakers.
 
@@ -153,19 +235,20 @@ SoundSource routes per-app audio output. We use it to send Zoom/Teams audio to B
 
 1. **Open SoundSource** (menu bar icon)
 2. **Configure Zoom:**
-   - Find **zoom.us** in the Applications list (click **+** to add if needed)
-   - Click the **Output** dropdown
-   - Select **Multi-Output** → check both:
-     - ✅ Your normal speakers/headphones
-     - ✅ **BlackHole 2ch**
+
+Find **zoom.us** in the Applications list (click **+** to add if needed)Click the **Output** dropdownSelect **Multi-Output** → check both:✅ Your normal speakers/headphones✅ **BlackHole 2ch**
+
 3. **Configure Microsoft Teams:**
-   - Same as Zoom: set Output to Multi-Output with speakers + BlackHole 2ch
+
+Same as Zoom: set Output to Multi-Output with speakers + BlackHole 2ch
+
 4. **Optional — Save as Profile:**
-   - Save as "Meeting Recording" for quick toggling
+
+Save as "Meeting Recording" for quick toggling
 
 After configuration, meeting audio flows to both your ears AND BlackHole simultaneously.
 
-### 2.3 Verify Audio Devices
+### 3.3 Verify Audio Devices
 
 ```bash
 cd transcriber
@@ -173,10 +256,11 @@ uv run meeting.py devices
 ```
 
 You should see:
+
 - `BlackHole 2ch` marked as ★ RECOMMENDED
 - Your mic (e.g., "Yeti Stereo Microphone", "MacBook Air Microphone") auto-detected for mixing
 
-### 2.4 Test Connectivity
+### 3.4 Test Connectivity
 
 ```bash
 # Check transcriber is reachable
@@ -188,14 +272,17 @@ uv run meeting.py start "Setup Test"
 uv run meeting.py stop
 ```
 
-Check pilot logs to verify transcription completed:
+Check the configured transcriber logs to verify transcription completed:
+
 ```bash
-cd transcriber && make logs
+cd transcriber
+make logs                    # pilot
+make local-transcriber-logs  # local
 ```
 
 ---
 
-## Part 3: Daily Usage
+## Part 4: Daily Usage
 
 Once setup is complete, you have two options:
 
@@ -216,23 +303,27 @@ uv run meeting_bar.py
 ```
 
 This puts an icon in your menu bar:
+
 - **🎙** — Idle, ready for meetings
 - **🔴** — Recording in progress
 - **⚠️** — Error state
 
 Features:
+
 - **Auto-detection**: Automatically starts recording when Zoom or Teams meetings begin, and stops when they end
 - **Manual control**: Click Start Recording… / Stop Recording from the menu
 - **Pilot status**: Shows connection status with the transcription server
 - **Toggle auto-detect**: Disable/enable automatic meeting detection via checkbox
 
 The app detects meetings by:
+
 - **Zoom**: Checks for `CptHost` subprocess (only present during active meetings)
 - **Teams**: Two-tier detection (Teams 2.x exposes no window titles and AVCaptureDevice doesn't see its mic usage):
-  - *Start*: MSTeams process running + physical mic active via `mic_active` compiled Swift helper (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on physical input devices)
-  - *End*: Queries macOS `audiomxd` system log for Teams audio session state (`isRecording: true/false`), since our own VBAN sender keeps the physical mic active during recording
+    - *Start*: MSTeams process running + physical mic active via `mic_active` compiled Swift helper (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on physical input devices)
+    - *End*: Queries macOS `audiomxd` system log for Teams audio session state (`isRecording: true/false`), since our own VBAN sender keeps the physical mic active during recording
 
 **First-time setup**: Build the `mic_active` helper before running:
+
 ```bash
 cd transcriber
 make build
@@ -258,9 +349,9 @@ uv run meeting.py status
 ### What Happens Under the Hood
 
 1. `meeting.py start` detects BlackHole + your mic, launches `vban_send.py` in dual-input mixed mode
-2. VBAN sender captures from BlackHole (remote participants) AND your mic (your voice), mixes them, streams UDP packets to pilot
-3. `meeting.py start` calls `POST /start` on pilot's transcriber, which opens a VBAN capture socket
-4. When you run `meeting.py stop`, pilot writes the WAV, runs whisper.cpp, and POSTs the transcript to the meetingnotesd webhook
+2. VBAN sender captures from BlackHole (remote participants) AND your mic (your voice), mixes them, streams UDP packets to the configured target
+3. `meeting.py start` calls `POST /start` on the target transcriber, which opens a VBAN capture socket
+4. When you run `meeting.py stop`, the target writes the WAV, runs whisper.cpp, and POSTs the transcript to the meetingnotesd webhook
 5. meetingnotesd runs AI summarization and writes org-mode notes
 
 ### Command Reference
@@ -288,9 +379,13 @@ cd transcriber
 # Local build
 make build           # Compile mic_active Swift binary (Teams detection)
 
-# Daily operations
-make status          # Transcriber health check
-make logs            # Tail transcriber logs
+# Daily operations: pilot
+make status          # Pilot transcriber health check
+make logs            # Tail pilot transcriber logs
+
+# Daily operations: local transcriber
+make local-transcriber-status
+make local-transcriber-logs
 
 # Deployment
 make deploy          # Rsync server/ to pilot, restart service
@@ -315,9 +410,11 @@ make test            # Quick health check
 ### Transcriber not reachable
 
 ```bash
-make check            # Is pilot reachable at all?
-make status           # Is the service running?
-make logs             # Check for startup errors
+make check                    # Is pilot reachable at all?
+make status                   # Is the pilot service running?
+make local-transcriber-status # Is the local service running?
+make logs                     # Check pilot startup errors
+make local-transcriber-logs   # Check local startup errors
 ssh edd@pilot "launchctl list | grep transcriber"
 ```
 
@@ -326,7 +423,7 @@ ssh edd@pilot "launchctl list | grep transcriber"
 - Is the VBAN sender running? Check `uv run meeting.py status`
 - Is audio being routed? Play a Zoom/Teams test call and check SoundSource meters
 - Check sender log: `cat /tmp/meeting-vban-sender.log`
-- Verify ports: sender sends to pilot:6980, transcriber listens on 6980
+- Verify ports: sender sends to the target host on UDP :6980, transcriber listens on 6980
 
 ### BlackHole 2ch not appearing
 
@@ -348,7 +445,7 @@ ssh edd@pilot "launchctl list | grep transcriber"
 
 ### Transcription quality issues
 
-- whisper.cpp with `small.en-tdrz` is the intended pilot configuration because it emits tinydiarize speaker-turn markers
+- whisper.cpp with `small.en-tdrz` is the intended configuration because it emits tinydiarize speaker-turn markers
 - In dual-input mode, the laptop sends remote audio on the left channel and the local mic on the right channel so the transcriber can emit `[speaker:Edd]` labels for high-confidence local speech
 - Very short recordings (< 3s) may produce empty output
 - Check WAV quality: `ssh edd@pilot "python3 -c \"import wave; w=wave.open('<path>'); print(f'{w.getframerate()}Hz {w.getnframes()/w.getframerate():.1f}s')\""`
@@ -372,12 +469,12 @@ make model               # Re-downloads model
 ## Network Configuration
 
 | Service | Host | Port | Protocol | Direction |
-|---------|------|------|----------|-----------|
-| VBAN audio | pilot | 6980 | UDP | Laptop → pilot |
-| Transcriber API | pilot | 8000 | HTTP | Laptop → pilot |
-| meetingnotesd | nuctu | 9876 | HTTP | Pilot → nuctu |
+| --- | --- | --- | --- | --- |
+| VBAN audio | `TRANSCRIBER_TARGET_HOST` | 6980 | UDP | Laptop → target |
+| Transcriber API | `TRANSCRIBER_TARGET_HOST` | 8000 | HTTP | Laptop → target |
+| meetingnotesd | nuctu | 9876 | HTTP | Target → nuctu |
 
-The laptop and pilot communicate over Tailscale. Ensure both machines are on the same tailnet and can resolve each other's hostnames.
+When using pilot, the laptop and pilot communicate over Tailscale. Ensure both machines are on the same tailnet and can resolve each other's hostnames. Local mode uses `127.0.0.1` and does not require Tailscale for the audio/API hop.
 
 ---
 
@@ -386,7 +483,7 @@ The laptop and pilot communicate over Tailscale. Ensure both machines are on the
 ### Laptop
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `transcriber/meeting_bar.py` | Menu bar app (auto-detect + manual control) |
 | `transcriber/mic_active.swift` | CoreAudio physical mic detector (compiled via `make build`) |
 | `transcriber/meeting.py` | CLI command interface |
@@ -402,7 +499,7 @@ The laptop and pilot communicate over Tailscale. Ensure both machines are on the
 ### Pilot (Server)
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `~/transcriber/transcriber.py` | Running transcriber server |
 | `~/transcriber/recordings/` | WAV files and transcripts |
 | `~/Library/Logs/transcriber.log` | Service log |

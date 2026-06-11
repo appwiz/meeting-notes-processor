@@ -9,7 +9,7 @@
 # ]
 # ///
 """
-Transcriber — FastAPI server for the Mac Mini transcription appliance.
+Transcriber — FastAPI server for the local or pilot transcription host.
 
 Captures audio via VBAN (UDP) directly to WAV and transcribes via whisper.cpp.
 On completion, POSTs results to meetingnotesd.py with YAML front matter
@@ -30,6 +30,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -47,8 +48,52 @@ from pydantic import BaseModel
 # Configuration
 # ---------------------------------------------------------------------------
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    if value.lower() in {"1", "true", "yes", "on"}:
+        return True
+    if value.lower() in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value, got {value!r}")
+
+
+def _env_int(
+    name: str,
+    default: int | None,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    parsed = int(value)
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"{name} must be >= {min_value}, got {parsed}")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"{name} must be <= {max_value}, got {parsed}")
+    return parsed
+
+
+def _env_float(name: str, default: float, *, min_value: float | None = None) -> float:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    parsed = float(value)
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"{name} must be >= {min_value}, got {parsed}")
+    return parsed
+
+
 WHISPER_CLI = os.getenv("WHISPER_CLI", os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli"))
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", os.path.expanduser("~/whisper.cpp/models/ggml-small.en-tdrz.bin"))
+WHISPER_THREADS = _env_int("WHISPER_THREADS", None, min_value=1)
+WHISPER_NICE = _env_int("WHISPER_NICE", None, min_value=-20, max_value=20)
+WHISPER_TASKPOLICY_BACKGROUND = _env_bool("WHISPER_TASKPOLICY_BACKGROUND", False)
+TRANSCRIPTION_IDLE_DELAY_SECONDS = _env_float("TRANSCRIPTION_IDLE_DELAY_SECONDS", 0.0, min_value=0.0)
+TRANSCRIBE_WHILE_RECORDING = _env_bool("TRANSCRIBE_WHILE_RECORDING", True)
 RECORDINGS_DIR = Path(os.getenv("RECORDINGS_DIR", os.path.expanduser("~/transcriber/recordings")))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://nuctu:9876/webhook")
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))  # UDP port for VBAN audio packets
@@ -143,6 +188,67 @@ def _disk_free_gb() -> float:
     """Return free disk space in GB."""
     stat = os.statvfs(str(RECORDINGS_DIR))
     return (stat.f_bavail * stat.f_frsize) / (1024**3)
+
+
+def _build_whisper_command(audio_path: Path) -> list[str]:
+    """Build the whisper.cpp command, including optional resource controls."""
+    cmd = [
+        WHISPER_CLI,
+        "-m", WHISPER_MODEL,
+        "-f", str(audio_path),
+        "-l", "en",
+        "--print-progress",
+        "--no-fallback",     # prevent temperature fallback (reduces hallucination)
+        "--suppress-nst",    # suppress non-speech tokens
+        "--tinydiarize",     # insert [SPEAKER_TURN] tokens (requires tdrz model)
+    ]
+
+    if WHISPER_THREADS is not None:
+        cmd.extend(["-t", str(WHISPER_THREADS)])
+
+    prefix: list[str] = []
+    if WHISPER_TASKPOLICY_BACKGROUND:
+        taskpolicy = shutil.which("taskpolicy")
+        if taskpolicy:
+            prefix.extend([taskpolicy, "-b"])
+        else:
+            logger.warning("WHISPER_TASKPOLICY_BACKGROUND requested, but taskpolicy was not found")
+
+    if WHISPER_NICE is not None:
+        nice = shutil.which("nice")
+        if nice:
+            prefix.extend([nice, "-n", str(WHISPER_NICE)])
+        else:
+            logger.warning("WHISPER_NICE requested, but nice was not found")
+
+    return prefix + cmd
+
+
+async def _wait_for_transcription_slot(recording: Recording) -> None:
+    """Optionally wait for a quiet window before starting Whisper."""
+    if TRANSCRIBE_WHILE_RECORDING and TRANSCRIPTION_IDLE_DELAY_SECONDS <= 0:
+        return
+
+    quiet_since = time.monotonic()
+    logged_recording_wait = False
+    while True:
+        if not TRANSCRIBE_WHILE_RECORDING and active_recording is not None:
+            if not logged_recording_wait:
+                logger.info(
+                    "Deferring transcription for '%s' while another recording is active",
+                    recording.title,
+                )
+                logged_recording_wait = True
+            quiet_since = time.monotonic()
+            await asyncio.sleep(5)
+            continue
+
+        logged_recording_wait = False
+        quiet_for = time.monotonic() - quiet_since
+        remaining = TRANSCRIPTION_IDLE_DELAY_SECONDS - quiet_for
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(5, remaining))
 
 
 def cleanup_old_recordings(recordings_dir: Path = None, max_age_days: int = None) -> int:
@@ -518,17 +624,8 @@ async def _transcribe(recording: Recording) -> None:
     transcript_path = recording.audio_path.with_suffix(".txt")
 
     try:
-        # Run whisper.cpp — stdout gives us timestamped transcript
-        cmd = [
-            WHISPER_CLI,
-            "-m", WHISPER_MODEL,
-            "-f", str(recording.audio_path),
-            "-l", "en",
-            "--print-progress",
-            "--no-fallback",     # prevent temperature fallback (reduces hallucination)
-            "--suppress-nst",    # suppress non-speech tokens
-            "--tinydiarize",     # insert [SPEAKER_TURN] tokens (requires tdrz model)
-        ]
+        # Run whisper.cpp — stdout gives us timestamped transcript.
+        cmd = _build_whisper_command(recording.audio_path)
         logger.info(f"Starting transcription: {recording.title}")
 
         proc = await asyncio.create_subprocess_exec(
@@ -611,6 +708,7 @@ async def _transcription_worker() -> None:
             logger.info(f"Transcription queue: starting '{recording.title}' "
                         f"({queue_depth} more waiting)")
         try:
+            await _wait_for_transcription_slot(recording)
             await _transcribe(recording)
         except Exception as e:
             logger.error(f"Transcription worker error: {e}", exc_info=True)
@@ -635,6 +733,11 @@ async def status():
         "recording_max_age_days": RECORDING_MAX_AGE_DAYS,
         "disk_free_gb": round(_disk_free_gb(), 1),
         "whisper_model": WHISPER_MODEL,
+        "whisper_threads": WHISPER_THREADS,
+        "whisper_nice": WHISPER_NICE,
+        "whisper_taskpolicy_background": WHISPER_TASKPOLICY_BACKGROUND,
+        "transcription_idle_delay_seconds": TRANSCRIPTION_IDLE_DELAY_SECONDS,
+        "transcribe_while_recording": TRANSCRIBE_WHILE_RECORDING,
         "webhook_url": WEBHOOK_URL,
         "vban_port": VBAN_PORT,
         "recent_count": len(recent_recordings),

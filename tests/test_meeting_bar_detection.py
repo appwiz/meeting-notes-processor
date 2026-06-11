@@ -13,6 +13,7 @@
 
 import subprocess
 import sys
+import importlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "transcriber"))
@@ -23,6 +24,45 @@ class _FakeCompletedProcess:
     def __init__(self, stdout: str, returncode: int = 0):
         self.stdout = stdout
         self.returncode = returncode
+
+
+def test_default_transcriber_target_is_pilot(monkeypatch):
+    """Pilot remains the default HTTP and VBAN target."""
+    monkeypatch.delenv("TRANSCRIBER_TARGET_HOST", raising=False)
+    monkeypatch.delenv("TRANSCRIBER_URL", raising=False)
+    monkeypatch.delenv("PILOT_HOST", raising=False)
+    reloaded = importlib.reload(meeting_bar)
+    try:
+        assert reloaded.TRANSCRIBER_URL == "http://pilot:8000"
+        assert reloaded.VBAN_TARGET_HOST == "pilot"
+    finally:
+        importlib.reload(meeting_bar)
+
+
+def test_transcriber_target_host_configures_url_and_vban(monkeypatch):
+    """A single target host setting should switch both HTTP and VBAN defaults."""
+    monkeypatch.setenv("TRANSCRIBER_TARGET_HOST", "127.0.0.1")
+    monkeypatch.delenv("TRANSCRIBER_URL", raising=False)
+    monkeypatch.delenv("PILOT_HOST", raising=False)
+    reloaded = importlib.reload(meeting_bar)
+    try:
+        assert reloaded.TRANSCRIBER_URL == "http://127.0.0.1:8000"
+        assert reloaded.VBAN_TARGET_HOST == "127.0.0.1"
+    finally:
+        importlib.reload(meeting_bar)
+
+
+def test_legacy_overrides_still_work(monkeypatch):
+    """Existing TRANSCRIBER_URL/PILOT_HOST launchd config remains compatible."""
+    monkeypatch.setenv("TRANSCRIBER_TARGET_HOST", "127.0.0.1")
+    monkeypatch.setenv("TRANSCRIBER_URL", "http://pilot:8000")
+    monkeypatch.setenv("PILOT_HOST", "pilot")
+    reloaded = importlib.reload(meeting_bar)
+    try:
+        assert reloaded.TRANSCRIBER_URL == "http://pilot:8000"
+        assert reloaded.VBAN_TARGET_HOST == "pilot"
+    finally:
+        importlib.reload(meeting_bar)
 
 
 def _audiomxd_output(*states: tuple[str, bool]) -> str:
@@ -38,6 +78,8 @@ def _audiomxd_output(*states: tuple[str, bool]) -> str:
 def test_audiomxd_end_detection_keeps_cached_true_session(monkeypatch):
     """Unrelated Teams false side sessions should not stop a live call."""
     meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "_AUDIOMXD_END_QUERY_TTL_SECONDS", 0)
     outputs = iter(
         [
             _audiomxd_output(("0x224002", True)),
@@ -57,6 +99,8 @@ def test_audiomxd_end_detection_keeps_cached_true_session(monkeypatch):
 def test_audiomxd_start_detection_ignores_cached_sessions(monkeypatch):
     """Start detection should not auto-start from an old cached true state."""
     meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "_AUDIOMXD_END_QUERY_TTL_SECONDS", 0)
     meeting_bar._AUDIOMXD_SESSION_STATES["Microsoft Teams"] = {"0x224002": True}
 
     def fake_run(*args, **kwargs):
@@ -77,6 +121,8 @@ def test_audiomxd_start_detection_ignores_cached_sessions(monkeypatch):
 def test_audiomxd_same_session_false_ends_cached_session(monkeypatch):
     """The actual call session should become inactive when it reports false."""
     meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "_AUDIOMXD_END_QUERY_TTL_SECONDS", 0)
     outputs = iter(
         [
             _audiomxd_output(("0x224002", True)),
@@ -91,3 +137,63 @@ def test_audiomxd_same_session_false_ends_cached_session(monkeypatch):
 
     assert meeting_bar._audiomxd_session_active("Microsoft Teams") is True
     assert meeting_bar._audiomxd_session_active("Microsoft Teams") is False
+
+
+def test_audiomxd_end_query_cache_throttles_log_show(monkeypatch):
+    """End detection can throttle expensive unified-log queries while recording."""
+    meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "_AUDIOMXD_END_QUERY_TTL_SECONDS", 15)
+
+    calls = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _FakeCompletedProcess(_audiomxd_output(("0x224002", True)))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(meeting_bar.time, "monotonic", lambda: 1000)
+
+    assert meeting_bar._audiomxd_session_active("Microsoft Teams") is True
+    assert meeting_bar._audiomxd_session_active("Microsoft Teams") is True
+    assert calls == 1
+
+
+def test_audiomxd_start_detection_bypasses_query_cache(monkeypatch):
+    """Start detection keeps 5s polling fidelity instead of reusing query results."""
+    meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "_AUDIOMXD_END_QUERY_TTL_SECONDS", 15)
+
+    outputs = iter([
+        _audiomxd_output(("0x224002", False)),
+        _audiomxd_output(("0x224002", True)),
+    ])
+    calls = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _FakeCompletedProcess(next(outputs))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(meeting_bar.time, "monotonic", lambda: 1000)
+
+    assert (
+        meeting_bar._audiomxd_session_active(
+            "Microsoft Teams",
+            default_if_no_entries=False,
+            use_cached_sessions=False,
+        )
+        is False
+    )
+    assert (
+        meeting_bar._audiomxd_session_active(
+            "Microsoft Teams",
+            default_if_no_entries=False,
+            use_cached_sessions=False,
+        )
+        is True
+    )
+    assert calls == 2

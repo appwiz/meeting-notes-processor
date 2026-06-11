@@ -109,6 +109,46 @@ async def test_transcribe_uses_documented_whisper_flags(tmp_path, monkeypatch):
     assert recording.transcript_path.read_text() == "Hello there."
 
 
+def test_build_whisper_command_includes_resource_controls(tmp_path, monkeypatch):
+    """Local mode can run whisper in the background with bounded threads."""
+    monkeypatch.setattr(transcriber, "WHISPER_CLI", "/tmp/whisper-cli")
+    monkeypatch.setattr(transcriber, "WHISPER_MODEL", "/tmp/ggml-small.en-tdrz.bin")
+    monkeypatch.setattr(transcriber, "WHISPER_THREADS", 2)
+    monkeypatch.setattr(transcriber, "WHISPER_NICE", 20)
+    monkeypatch.setattr(transcriber, "WHISPER_TASKPOLICY_BACKGROUND", True)
+    monkeypatch.setattr(transcriber.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    cmd = transcriber._build_whisper_command(tmp_path / "meeting.wav")
+
+    assert cmd[:5] == ["/usr/bin/taskpolicy", "-b", "/usr/bin/nice", "-n", "20"]
+    assert cmd[5] == "/tmp/whisper-cli"
+    assert cmd[cmd.index("-t") + 1] == "2"
+    assert "--tinydiarize" in cmd
+
+
+@pytest.mark.asyncio
+async def test_wait_for_transcription_slot_defers_while_recording(monkeypatch):
+    """Local mode should not start Whisper while a new recording is active."""
+    queued = _make_recording("Queued Meeting")
+    active = _make_recording("Active Meeting")
+    transcriber.active_recording = active
+    monkeypatch.setattr(transcriber, "TRANSCRIBE_WHILE_RECORDING", False)
+    monkeypatch.setattr(transcriber, "TRANSCRIPTION_IDLE_DELAY_SECONDS", 0)
+
+    sleeps = 0
+
+    async def fake_sleep(_delay):
+        nonlocal sleeps
+        sleeps += 1
+        transcriber.active_recording = None
+
+    monkeypatch.setattr(transcriber.asyncio, "sleep", fake_sleep)
+
+    await transcriber._wait_for_transcription_slot(queued)
+
+    assert sleeps == 1
+
+
 @pytest.mark.asyncio
 async def test_queue_processes_sequentially():
     """Transcriptions should run one at a time, not concurrently."""

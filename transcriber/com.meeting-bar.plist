@@ -19,6 +19,10 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>TRANSCRIBER_TARGET_HOST</key>
+        <string>pilot</string>
+        <key>AUDIOMXD_END_QUERY_TTL_SECONDS</key>
+        <string>15</string>
     </dict>
 
     <key>RunAtLoad</key>

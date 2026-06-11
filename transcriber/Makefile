@@ -1,7 +1,7 @@
 # Transcriber Appliance — local build + remote management via SSH
 #
-# Local targets: build (compiles mic_active Swift helper)
-# Remote targets: all others operate on the Mac Mini "pilot" over SSH
+# Local targets: build, meeting-bar-*, local-transcriber-*
+# Remote targets: provision/deploy/status/logs/check operate on "pilot" over SSH
 # Usage: cd transcriber && make <target>
 
 REMOTE_HOST := edd@pilot
@@ -12,7 +12,10 @@ SERVICE_LABEL := com.transcriber
 PLIST := $(SERVICE_LABEL).plist
 
 .PHONY: check provision deploy logs status ssh test model build \
-       meeting-bar-install meeting-bar-restart meeting-bar-logs meeting-bar-status
+       meeting-bar-install meeting-bar-restart meeting-bar-local meeting-bar-pilot \
+       meeting-bar-logs meeting-bar-status \
+       local-transcriber-install local-transcriber-restart local-transcriber-stop \
+       local-transcriber-status local-transcriber-logs
 
 # ---------------------------------------------------------------------------
 # Local Build
@@ -30,6 +33,8 @@ mic_active: mic_active.swift
 
 MEETING_BAR_LABEL := com.meeting-bar
 MEETING_BAR_PLIST := $(MEETING_BAR_LABEL).plist
+LOCAL_TRANSCRIBER_LABEL := com.transcriber.local
+LOCAL_TRANSCRIBER_PLIST := $(LOCAL_TRANSCRIBER_LABEL).plist
 
 meeting-bar-install:  ## Install meeting_bar.py as a launchd agent
 	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
@@ -45,6 +50,26 @@ meeting-bar-restart:  ## Restart meeting_bar.py launchd agent
 	@sleep 2
 	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar restarted" || echo "WARNING: service not loaded"
 
+meeting-bar-local:  ## Configure meeting_bar.py to send recording audio to the local transcriber
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
+	@sleep 1
+	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@plutil -replace EnvironmentVariables.TRANSCRIBER_TARGET_HOST -string 127.0.0.1 ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@sleep 2
+	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar restarted" || echo "WARNING: service not loaded"
+	@echo "meeting-bar target: local transcriber (127.0.0.1)"
+
+meeting-bar-pilot:  ## Configure meeting_bar.py to send recording audio to pilot
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
+	@sleep 1
+	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@plutil -replace EnvironmentVariables.TRANSCRIBER_TARGET_HOST -string pilot ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@sleep 2
+	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar restarted" || echo "WARNING: service not loaded"
+	@echo "meeting-bar target: pilot"
+
 meeting-bar-logs:  ## Tail meeting_bar.py logs
 	tail -f ~/Library/Logs/meeting-bar.log
 
@@ -52,6 +77,33 @@ meeting-bar-status:  ## Show meeting_bar.py service status
 	@launchctl list | grep $(MEETING_BAR_LABEL) || echo "meeting-bar: not loaded"
 	@echo "---"
 	@tail -5 ~/Library/Logs/meeting-bar.log 2>/dev/null || echo "No log file yet"
+
+local-transcriber-install:  ## Install the local transcriber launchd agent
+	cp $(LOCAL_TRANSCRIBER_PLIST) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) 2>/dev/null
+	@sleep 1
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+	@sleep 2
+	@launchctl list | grep -q $(LOCAL_TRANSCRIBER_LABEL) && echo "local transcriber installed and running" || echo "WARNING: local transcriber not loaded"
+
+local-transcriber-restart:  ## Restart the local transcriber launchd agent
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) 2>/dev/null
+	@sleep 1
+	cp $(LOCAL_TRANSCRIBER_PLIST) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+	@sleep 2
+	@launchctl list | grep -q $(LOCAL_TRANSCRIBER_LABEL) && echo "local transcriber restarted" || echo "WARNING: local transcriber not loaded"
+
+local-transcriber-stop:  ## Stop the local transcriber launchd agent
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) 2>/dev/null
+
+local-transcriber-status:  ## Show local transcriber launchd and HTTP status
+	@launchctl list | grep $(LOCAL_TRANSCRIBER_LABEL) || echo "local transcriber: not loaded"
+	@echo "---"
+	@curl -s http://127.0.0.1:8000/status 2>/dev/null || echo "local transcriber HTTP: unavailable"
+
+local-transcriber-logs:  ## Tail local transcriber logs
+	tail -f ~/Library/Logs/transcriber-local.log
 
 # ---------------------------------------------------------------------------
 # Connectivity & Status

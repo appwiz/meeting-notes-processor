@@ -8,10 +8,10 @@ meeting-notes-processor. Read this before making any changes.
 A two-machine audio transcription pipeline:
 
 1. **Laptop** runs `meeting_bar.py` (macOS menu bar app). Detects Zoom/Teams
-   meetings, captures audio via VBAN, streams it to the Mac Mini.
-2. **pilot** (Mac Mini M1) runs `transcriber.py` (FastAPI server). Receives
-   VBAN audio, writes WAV, runs whisper.cpp, POSTs the transcript to
-   `meetingnotesd` on nuctu.
+   meetings, captures audio via VBAN, streams it to the configured transcriber.
+2. **pilot** (Mac Mini M1) or the laptop runs `transcriber.py` (FastAPI server).
+   It receives VBAN audio, writes WAV, runs whisper.cpp, POSTs the transcript
+   to `meetingnotesd` on nuctu.
 
 ```
 laptop                          pilot (Mac Mini)                nuctu
@@ -130,6 +130,11 @@ or mDNS).
 | `VBAN_PORT` | `6980` | |
 | `TRANSCRIBER_HOST` | `0.0.0.0` | |
 | `TRANSCRIBER_PORT` | `8000` | |
+| `WHISPER_THREADS` | unset | Optional `whisper-cli -t` thread cap; local launchd sets `2` |
+| `WHISPER_NICE` | unset | Optional `nice -n` priority; local launchd sets `20` |
+| `WHISPER_TASKPOLICY_BACKGROUND` | `false` | Run whisper through `taskpolicy -b`; local launchd sets `true` |
+| `TRANSCRIBE_WHILE_RECORDING` | `true` | If `false`, queued transcriptions wait while a new recording is active |
+| `TRANSCRIPTION_IDLE_DELAY_SECONDS` | `0` | Quiet window before Whisper starts; local launchd sets `30` |
 | `LOCAL_SPEAKER_LABEL` | `Edd` | Label emitted for the local mic channel |
 | `LOCAL_SPEAKER_CHANNEL` | `2` | 1-based channel index for the local mic in stereo captures |
 | `LOCAL_SPEAKER_MIN_DBFS` | `-40` | Minimum mic level required before labeling a segment |
@@ -139,10 +144,13 @@ or mDNS).
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `TRANSCRIBER_URL` | `http://pilot:8000` | |
-| `PILOT_HOST` | `pilot` | For VBAN target |
+| `TRANSCRIBER_TARGET_HOST` | `pilot` | Default host for both HTTP API and VBAN target; set `127.0.0.1` for local mode |
+| `TRANSCRIBER_URL` | `http://$TRANSCRIBER_TARGET_HOST:8000` | Overrides HTTP API target when set |
+| `PILOT_HOST` | `$TRANSCRIBER_TARGET_HOST` | Legacy override for VBAN target |
 | `VBAN_PORT` | `6980` | |
-| `MEETING_POLL_INTERVAL` | `5` | Seconds between detection checks |\n| `MEETING_CALENDAR_ORG` | `~/gtd/outlook.org` | Org-mode calendar for title lookup |
+| `MEETING_POLL_INTERVAL` | `5` | Seconds between detection checks |
+| `AUDIOMXD_END_QUERY_TTL_SECONDS` | `15` | Seconds to cache expensive Teams/Edge audiomxd `log show` queries for end detection only |
+| `MEETING_CALENDAR_ORG` | `~/gtd/outlook.org` | Org-mode calendar for title lookup |
 
 ## Whisper Configuration
 

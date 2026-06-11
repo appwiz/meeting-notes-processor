@@ -11,7 +11,7 @@
 Meeting Bar — macOS menu bar app for automatic meeting recording.
 
 Sits in the menu bar showing recording state. Detects Zoom/Teams meetings
-and automatically starts/stops recording via the VBAN → pilot pipeline.
+and automatically starts/stops recording via the VBAN → transcriber pipeline.
 
 States:
   🎙  Idle
@@ -53,8 +53,9 @@ from PyObjCTools.AppHelper import callAfter
 # Configuration
 # ---------------------------------------------------------------------------
 
-TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "http://pilot:8000")
-PILOT_HOST = os.getenv("PILOT_HOST", "pilot")
+TRANSCRIBER_TARGET_HOST = os.getenv("TRANSCRIBER_TARGET_HOST", "pilot")
+TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", f"http://{TRANSCRIBER_TARGET_HOST}:8000")
+VBAN_TARGET_HOST = os.getenv("PILOT_HOST", TRANSCRIBER_TARGET_HOST)
 VBAN_PORT = int(os.getenv("VBAN_PORT", "6980"))
 POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
 # All app detections require this many consecutive positive polls before
@@ -242,7 +243,9 @@ _AUDIOMXD_SESSION_RE = re.compile(
     r"sessionID:\s*(0x[0-9a-fA-F]+).*?isRecording:\s*(true|false)"
 )
 _AUDIOMXD_WINDOW_SECONDS = 120
+_AUDIOMXD_END_QUERY_TTL_SECONDS = float(os.getenv("AUDIOMXD_END_QUERY_TTL_SECONDS", "15"))
 _AUDIOMXD_SESSION_STATES: dict[str, dict[str, bool]] = {}
+_AUDIOMXD_QUERY_CACHE: dict[str, tuple[float, dict[str, bool]]] = {}
 
 
 def _audiomxd_session_active(
@@ -291,23 +294,30 @@ def _audiomxd_session_active(
             Use False for START detection to avoid stale positives from older
             calls; use True for END detection to bridge quiet log windows.
     """
-    try:
-        result = subprocess.run(
-            ["log", "show", "--last", f"{_AUDIOMXD_WINDOW_SECONDS}s",
-             "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}" AND eventMessage CONTAINS "isRecording"',
-             "--style", "compact"],
-            capture_output=True, text=True, timeout=15,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.debug(f"audiomxd log check failed: {e}")
-        return default_if_no_entries
+    query_ttl = _AUDIOMXD_END_QUERY_TTL_SECONDS if use_cached_sessions else 0
+    now = time.monotonic()
+    cached_query = _AUDIOMXD_QUERY_CACHE.get(app_name)
+    if cached_query is not None and query_ttl > 0 and now - cached_query[0] < query_ttl:
+        session_states = cached_query[1]
+    else:
+        try:
+            result = subprocess.run(
+                ["log", "show", "--last", f"{_AUDIOMXD_WINDOW_SECONDS}s",
+                 "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}" AND eventMessage CONTAINS "isRecording"',
+                 "--style", "compact"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug(f"audiomxd log check failed: {e}")
+            return default_if_no_entries
 
-    # Chronological scan; latest event per sessionID wins.
-    session_states: dict[str, bool] = {}
-    for line in result.stdout.splitlines():
-        m = _AUDIOMXD_SESSION_RE.search(line)
-        if m:
-            session_states[m.group(1).lower()] = (m.group(2) == "true")
+        # Chronological scan; latest event per sessionID wins.
+        session_states = {}
+        for line in result.stdout.splitlines():
+            m = _AUDIOMXD_SESSION_RE.search(line)
+            if m:
+                session_states[m.group(1).lower()] = (m.group(2) == "true")
+        _AUDIOMXD_QUERY_CACHE[app_name] = (now, session_states)
 
     if not session_states:
         cached = _AUDIOMXD_SESSION_STATES.get(app_name, {})
@@ -408,7 +418,7 @@ def start_sender(device: str, mic: str | None = None) -> int:
     if existing:
         logger.info(f"VBAN sender already running (PID {existing})")
         return existing
-    cmd = ["uv", "run", str(VBAN_SEND_SCRIPT), "-d", device, "-t", PILOT_HOST, "-p", str(VBAN_PORT)]
+    cmd = ["uv", "run", str(VBAN_SEND_SCRIPT), "-d", device, "-t", VBAN_TARGET_HOST, "-p", str(VBAN_PORT)]
     if mic:
         cmd.extend(["--mic", mic])
     log_fh = open(LOG_FILE, "w")
@@ -459,16 +469,16 @@ def _resolve_host(hostname: str, timeout: float = 3.0) -> bool:
     return result[0] is not None
 
 
-def _check_pilot_dns() -> bool:
-    """Pre-check DNS for pilot host; log transitions."""
+def _check_transcriber_dns() -> bool:
+    """Pre-check DNS for the configured transcriber host; log transitions."""
     global _dns_ok
     from urllib.parse import urlparse
     hostname = urlparse(TRANSCRIBER_URL).hostname
     ok = _resolve_host(hostname)
     if ok and not _dns_ok:
-        logger.info(f"Pilot DNS reachable again ({hostname})")
+        logger.info(f"Transcriber DNS reachable again ({hostname})")
     elif not ok and _dns_ok:
-        logger.warning(f"Pilot DNS unreachable ({hostname}) — skipping poll")
+        logger.warning(f"Transcriber DNS unreachable ({hostname}) — skipping poll")
     _dns_ok = ok
     return ok
 
@@ -478,26 +488,26 @@ def _check_pilot_dns() -> bool:
 # ---------------------------------------------------------------------------
 
 
-_pilot_connected = True  # track connection state for transition logging
+_transcriber_connected = True  # track connection state for transition logging
 
 
 def transcriber_status() -> dict | None:
-    global _pilot_connected
-    if not _check_pilot_dns():
-        if _pilot_connected:
-            logger.warning("Lost connection to pilot")
-            _pilot_connected = False
+    global _transcriber_connected
+    if not _check_transcriber_dns():
+        if _transcriber_connected:
+            logger.warning("Lost connection to transcriber")
+            _transcriber_connected = False
         return None
     try:
         result = requests.get(f"{TRANSCRIBER_URL}/status", timeout=5).json()
-        if not _pilot_connected:
-            logger.info("Reconnected to pilot")
-            _pilot_connected = True
+        if not _transcriber_connected:
+            logger.info("Reconnected to transcriber")
+            _transcriber_connected = True
         return result
     except requests.RequestException:
-        if _pilot_connected:
-            logger.warning("Lost connection to pilot")
-            _pilot_connected = False
+        if _transcriber_connected:
+            logger.warning("Lost connection to transcriber")
+            _transcriber_connected = False
         return None
 
 
@@ -553,7 +563,7 @@ class MeetingBarApp(rumps.App):
         self._detection_enabled = True
         self._busy = False  # True while start/stop in progress
         self._suppress_auto = False  # True after manual stop of auto-started recording
-        self._pilot_text = "Pilot: checking…"
+        self._transcriber_text = "Transcriber: checking…"
         self._confirm_app: str | None = None  # app being debounced
         self._confirm_count = 0  # consecutive detection count for debounce
 
@@ -562,7 +572,7 @@ class MeetingBarApp(rumps.App):
         self._status_item = rumps.MenuItem("Status: Idle")
         self._start_item = rumps.MenuItem("Start Recording")
         self._stop_item = rumps.MenuItem("Stop Recording")
-        self._pilot_item = rumps.MenuItem("Pilot: checking…")
+        self._transcriber_item = rumps.MenuItem("Transcriber: checking…")
         self.menu = [
             self._status_item,
             None,
@@ -570,7 +580,7 @@ class MeetingBarApp(rumps.App):
             self._stop_item,
             None,
             rumps.MenuItem("Auto-Detect Meetings"),
-            self._pilot_item,
+            self._transcriber_item,
             rumps.MenuItem("View Log…"),
             None,
             rumps.MenuItem("Quit Meeting Bar"),
@@ -614,7 +624,7 @@ class MeetingBarApp(rumps.App):
                 recording = self._recording
                 busy = self._busy
                 rec_title = self._recording_title
-                pilot = self._pilot_text
+                transcriber = self._transcriber_text
 
             # Icon
             if recording:
@@ -637,7 +647,7 @@ class MeetingBarApp(rumps.App):
             self._stop_item.hidden = not recording
 
             # Pilot status
-            self._pilot_item.title = pilot
+            self._transcriber_item.title = transcriber
         except Exception as e:
             logger.error(f"_apply_ui_state error: {e}", exc_info=True)
 
@@ -656,14 +666,14 @@ class MeetingBarApp(rumps.App):
             time.sleep(POLL_INTERVAL)
 
     def _poll_work(self):
-        # Pilot status (network I/O)
+        # Transcriber status (network I/O)
         status = transcriber_status()
-        pilot_text = "Pilot: connected" if status else "Pilot: unreachable"
+        transcriber_text = "Transcriber: connected" if status else "Transcriber: unreachable"
         if status and status.get("recording"):
-            pilot_text += f" — rec '{status['recording'].get('title', '?')}'"
+            transcriber_text += f" — rec '{status['recording'].get('title', '?')}'"
 
         with self._lock:
-            self._pilot_text = pilot_text
+            self._transcriber_text = transcriber_text
 
         # Schedule full UI update on main thread
         self._schedule_ui_update()
@@ -761,7 +771,7 @@ class MeetingBarApp(rumps.App):
 
             result = transcriber_start(title)
             if not result:
-                logger.error("Failed to start recording on pilot")
+                logger.error("Failed to start recording on transcriber")
                 stop_sender()
                 return
 
@@ -808,7 +818,7 @@ class MeetingBarApp(rumps.App):
             if result:
                 logger.info(f"Recording stopped: '{title}' ({duration})")
             else:
-                logger.warning("No active recording on pilot")
+                logger.warning("No active recording on transcriber")
 
         except Exception as e:
             logger.error(f"Stop failed: {e}", exc_info=True)
@@ -902,7 +912,7 @@ class MeetingBarApp(rumps.App):
 def main():
     logger.info("Meeting Bar starting")
     logger.info(f"  Transcriber: {TRANSCRIBER_URL}")
-    logger.info(f"  VBAN target: {PILOT_HOST}:{VBAN_PORT}")
+    logger.info(f"  VBAN target: {VBAN_TARGET_HOST}:{VBAN_PORT}")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
     logger.info(f"  Calendar: {CALENDAR_ORG}")
     logger.info(f"  Log: {LOG_PATH}")
