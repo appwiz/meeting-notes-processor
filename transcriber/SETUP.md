@@ -169,6 +169,26 @@ cd transcriber
 ./setup/03-whisper.sh
 ```
 
+Verify that Whisper is Metal-enabled:
+
+```bash
+grep -Ei 'GGML_METAL|GGML_AVAILABLE_BACKENDS' ~/whisper.cpp/build/CMakeCache.txt
+otool -L ~/whisper.cpp/build/bin/whisper-cli | grep -i metal
+```
+
+You should see `GGML_METAL:BOOL=ON`, `ggml-metal` in the available backends,
+and `libggml-metal` linked by `whisper-cli`.
+
+For a runtime check:
+
+```bash
+cd ~/whisper.cpp
+build/bin/whisper-cli -m models/ggml-small.en-tdrz.bin -f samples/jfk.wav -l en --tinydiarize -t 2
+```
+
+The startup log should include `use gpu = 1`, `GPU name: MTL0`, and
+`using MTL0 backend`.
+
 ### 2.2 Start the local transcriber
 
 ```bash
@@ -182,6 +202,25 @@ Logs:
 ```bash
 make local-transcriber-logs
 ```
+
+The local launchd agent is installed at:
+
+```text
+~/Library/LaunchAgents/com.transcriber.local.plist
+```
+
+It has `RunAtLoad` and `KeepAlive` enabled, so it restarts after you log in
+following a reboot. The service intentionally binds to localhost only and runs
+Whisper conservatively:
+
+| Variable | Local value | Purpose |
+| --- | --- | --- |
+| `TRANSCRIBER_HOST` | `127.0.0.1` | Bind the API to localhost only |
+| `TRANSCRIBE_WHILE_RECORDING` | `false` | Do not start queued Whisper work during another meeting recording |
+| `TRANSCRIPTION_IDLE_DELAY_SECONDS` | `30` | Wait for a quiet window after recording stops |
+| `WHISPER_TASKPOLICY_BACKGROUND` | `true` | Put Whisper in macOS background scheduling policy |
+| `WHISPER_NICE` | `20` | Lowest CPU priority |
+| `WHISPER_THREADS` | `2` | Cap Whisper CPU threads |
 
 ### 2.3 Switch the menu bar to local mode
 
@@ -204,6 +243,16 @@ The underlying configuration knob is `TRANSCRIBER_TARGET_HOST`. The menu bar der
 | `TRANSCRIBER_URL` | `http://$TRANSCRIBER_TARGET_HOST:8000` | Optional HTTP API override |
 | `PILOT_HOST` | `$TRANSCRIBER_TARGET_HOST` | Legacy VBAN target override |
 | `AUDIOMXD_END_QUERY_TTL_SECONDS` | `15` | Cache expensive Teams/Edge audiomxd log queries during end detection only; start detection still checks every poll |
+
+`make meeting-bar-local` writes `TRANSCRIBER_TARGET_HOST=127.0.0.1` into the
+installed LaunchAgent plist at:
+
+```text
+~/Library/LaunchAgents/com.meeting-bar.plist
+```
+
+That setting survives reboot/login. Use `make meeting-bar-pilot` to roll back
+to the remote pilot transcriber.
 
 ---
 
