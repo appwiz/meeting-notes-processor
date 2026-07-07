@@ -368,7 +368,7 @@ The app detects meetings by:
 
 - **Zoom**: Checks for `CptHost` subprocess (only present during active meetings)
 - **Teams**: Two-tier detection (Teams 2.x exposes no window titles and AVCaptureDevice doesn't see its mic usage):
-    - *Start*: MSTeams process running + physical mic active via `mic_active` compiled Swift helper (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on physical input devices)
+    - *Start*: Native Teams process tree running (`MSTeams` or Teams 2.x WebView/helpers) + recent `audiomxd` recording evidence
     - *End*: Queries macOS `audiomxd` system log for Teams audio session state (`isRecording: true/false`), since our own VBAN sender keeps the physical mic active during recording
 
 **First-time setup**: Build the `mic_active` helper before running:

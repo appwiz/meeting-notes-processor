@@ -197,3 +197,46 @@ def test_audiomxd_start_detection_bypasses_query_cache(monkeypatch):
         is True
     )
     assert calls == 2
+
+
+def test_native_teams_detection_accepts_teams2_helper_process(monkeypatch):
+    """Teams 2.x runs WebView/helper processes, not an exact MSTeams binary."""
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["pgrep", "-x", "MSTeams"]:
+            return _FakeCompletedProcess("", returncode=1)
+        if args[:2] == ["pgrep", "-f"] and "com\\.microsoft\\.teams2" in args[2]:
+            return _FakeCompletedProcess("123\n", returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        meeting_bar,
+        "_audiomxd_session_active",
+        lambda app_name, default_if_no_entries, use_cached_sessions: True,
+    )
+
+    assert meeting_bar.detect_teams_meeting() is True
+    assert calls == [
+        ["pgrep", "-x", "MSTeams"],
+        ["pgrep", "-f", r"/Microsoft Teams\.app/.*com\.microsoft\.teams2"],
+    ]
+
+
+def test_native_teams_detection_requires_teams_process(monkeypatch):
+    """Stale audiomxd state alone should not start recording when Teams is absent."""
+
+    def fake_run(args, **kwargs):
+        if args[0] == "pgrep":
+            return _FakeCompletedProcess("", returncode=1)
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    def fail_audiomxd(*args, **kwargs):
+        raise AssertionError("audiomxd should not be queried without Teams")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(meeting_bar, "_audiomxd_session_active", fail_audiomxd)
+
+    assert meeting_bar.detect_teams_meeting() is False
