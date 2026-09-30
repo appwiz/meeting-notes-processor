@@ -26,12 +26,14 @@ API:
 """
 
 import asyncio
+import array
 import logging
 import math
 import os
 import re
 import shutil
 import socket
+import sys
 import threading
 import time
 import wave
@@ -148,6 +150,9 @@ class Recording:
             "meeting_end": self.meeting_end.isoformat() if self.meeting_end else None,
             "error": self.error,
             "webhook_sent": self.webhook_sent,
+            "audio_peak_dbfs": (
+                self.vban_capture.peak_dbfs if self.vban_capture else None
+            ),
         }
 
 
@@ -325,6 +330,24 @@ class VBANCapture:
         self._thread: Optional[threading.Thread] = None
         self.sample_rate: Optional[int] = None
         self.total_samples = 0
+        self.peak_pcm = 0
+
+    @property
+    def peak_dbfs(self) -> float | None:
+        if self.peak_pcm <= 0:
+            return None
+        return 20.0 * math.log10(self.peak_pcm / 32768.0)
+
+    def observe_pcm(self, pcm_data: bytes) -> None:
+        samples = array.array("h")
+        samples.frombytes(pcm_data)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if samples:
+            self.peak_pcm = max(
+                self.peak_pcm,
+                max(abs(sample) for sample in samples),
+            )
 
     def start(self):
         """Start capturing VBAN packets in a background thread."""
@@ -364,6 +387,7 @@ class VBANCapture:
                 sr_index = data[4] & 0x1F
                 channels = (data[6] & 0xFF) + 1
                 pcm_data = data[self.HEADER_SIZE:]
+                self.observe_pcm(pcm_data)
 
                 if wav_file is None:
                     self.sample_rate = (
@@ -390,9 +414,14 @@ class VBANCapture:
                 duration = (
                     self.total_samples / self.sample_rate if self.sample_rate else 0
                 )
+                peak = (
+                    f"{self.peak_dbfs:.1f} dBFS"
+                    if self.peak_dbfs is not None
+                    else "-inf dBFS"
+                )
                 logger.info(
                     f"VBAN capture saved: {duration:.1f}s, "
-                    f"{self.total_samples} samples → {self.audio_path}"
+                    f"{self.total_samples} samples, peak={peak} → {self.audio_path}"
                 )
             sock.close()
 
@@ -835,6 +864,17 @@ async def stop():
         _archive_recording(recording)
         active_recording = None
         raise HTTPException(status_code=500, detail="Recording failed: no audio captured")
+
+    if recording.vban_capture and recording.vban_capture.peak_pcm == 0:
+        recording.state = RecordingState.FAILED
+        recording.error = "Audio capture contained digital silence"
+        _archive_recording(recording)
+        active_recording = None
+        logger.error(f"Recording failed with digital silence: {recording.title}")
+        raise HTTPException(
+            status_code=500,
+            detail="Recording failed: captured audio was silent",
+        )
 
     # Enqueue for sequential transcription
     await _transcription_queue.put(recording)

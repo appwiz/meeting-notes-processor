@@ -74,7 +74,22 @@ class TestIsTranscriptWorthProcessing:
             os.unlink(path)
 
     def test_normal_transcript_accepted(self):
-        body = "Discussion about project planning and timeline. " * 20
+        body = (
+            "Alex reviewed the migration timeline and explained that database "
+            "replication must finish before traffic mirroring begins. Priya "
+            "shared benchmark results from the staging cluster, including "
+            "latency percentiles, memory pressure, and several timeout errors. "
+            "The team compared regional capacity, discussed customer impact, "
+            "and agreed to postpone the cutover until observability dashboards "
+            "show stable behavior. Morgan will update the architecture proposal "
+            "with rollback steps, ownership boundaries, and cost estimates. "
+            "Jordan will coordinate a security review covering credentials, "
+            "network policies, encryption, and audit retention. Casey raised a "
+            "concern about weekend staffing, so the launch window moved to "
+            "Tuesday morning. Everyone confirmed their actions and deadlines. "
+            "A follow-up session will evaluate load-test evidence, incident "
+            "response readiness, and documentation quality before approval."
+        )
         path = _write_temp(YAML_HEADER + body)
         try:
             ok, reason = run_summarization.is_transcript_worth_processing(path)
@@ -94,11 +109,42 @@ class TestIsTranscriptWorthProcessing:
 
     def test_no_header_long_body_accepted(self):
         """Without YAML header, long enough body should pass (no duration check possible)."""
-        body = "Discussion about project planning. " * 20
+        body = (
+            "The design review covered API compatibility, storage durability, "
+            "regional failover, deployment sequencing, and support readiness. "
+            "Engineers presented measurements from production-like workloads "
+            "and identified a cache invalidation defect under concurrent writes. "
+            "The product manager clarified acceptance criteria for administrators "
+            "and end users, while operations documented alerts and escalation "
+            "paths. After considering alternatives, the group selected a phased "
+            "release with feature flags and explicit rollback checkpoints. "
+            "Owners were assigned for implementation, testing, communication, "
+            "privacy assessment, and post-launch monitoring. The next review "
+            "will examine resolved defects and final performance evidence."
+        )
         path = _write_temp(body)
         try:
             ok, reason = run_summarization.is_transcript_worth_processing(path)
             assert ok
+        finally:
+            os.unlink(path)
+
+    def test_rejects_low_diversity_whisper_hallucination(self):
+        path = _write_temp(YAML_HEADER + ("Mm-hmm.\nYeah.\nMm.\n" * 20))
+        try:
+            ok, reason = run_summarization.is_transcript_worth_processing(path)
+            assert not ok
+            assert "speech diversity" in reason
+        finally:
+            os.unlink(path)
+
+    def test_rejects_long_repetitive_whisper_hallucination(self):
+        body = "I think I have a good idea, but I think I have a good idea.\n" * 100
+        path = _write_temp(YAML_HEADER + body)
+        try:
+            ok, reason = run_summarization.is_transcript_worth_processing(path)
+            assert not ok
+            assert "highly repetitive" in reason
         finally:
             os.unlink(path)
 

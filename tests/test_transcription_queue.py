@@ -22,6 +22,7 @@ Run with: uv run pytest tests/test_transcription_queue.py -v
 """
 
 import asyncio
+import array
 import importlib
 import os
 import struct
@@ -74,6 +75,36 @@ def test_default_whisper_model_matches_docs(monkeypatch):
         assert reloaded.WHISPER_MODEL.endswith("ggml-small.en-tdrz.bin")
     finally:
         importlib.reload(transcriber)
+
+
+def test_vban_capture_tracks_pcm_peak(tmp_path):
+    capture = transcriber.VBANCapture(tmp_path / "test.wav")
+    samples = array.array("h", [0, -1234, 3276, -42])
+    if sys.byteorder != "little":
+        samples.byteswap()
+
+    capture.observe_pcm(samples.tobytes())
+
+    assert capture.peak_pcm == 3276
+    assert capture.peak_dbfs == pytest.approx(-20.0, abs=0.1)
+
+
+@pytest.mark.asyncio
+async def test_stop_rejects_digital_silence(tmp_path):
+    recording = _make_recording(tmp_path=tmp_path)
+    recording.audio_path.write_bytes(b"\0" * 2000)
+    recording.vban_capture = mock.Mock(peak_pcm=0)
+    transcriber.active_recording = recording
+
+    with pytest.raises(transcriber.HTTPException) as exc_info:
+        await transcriber.stop()
+
+    assert exc_info.value.status_code == 500
+    assert "silent" in exc_info.value.detail
+    assert recording.state == transcriber.RecordingState.FAILED
+    assert recording.error == "Audio capture contained digital silence"
+    assert transcriber.active_recording is None
+    assert transcriber._transcription_queue.empty()
 
 
 @pytest.mark.asyncio

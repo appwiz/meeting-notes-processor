@@ -23,6 +23,7 @@ import json
 import time as _time
 import uuid
 import select
+import zlib
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -332,6 +333,14 @@ MIN_BODY_LENGTH = 200
 # Minimum recording duration to be worth processing (seconds)
 MIN_DURATION_SECONDS = 60
 
+# Short transcripts with no meaningful vocabulary are usually silence hallucinations.
+MIN_SPEECH_DIVERSITY_WORDS = 20
+MIN_UNIQUE_SPEECH_WORDS = 6
+
+# Valid historical transcripts compress above 0.28; known hallucinations are below 0.09.
+MIN_REPETITIVE_BODY_BYTES = 1000
+MIN_TRANSCRIPT_COMPRESSION_RATIO = 0.12
+
 # Minimum body length to consider checking for multi-meeting (characters)
 MULTI_MEETING_MIN_BODY = 5000
 
@@ -367,7 +376,27 @@ def is_transcript_worth_processing(filepath: str) -> tuple[bool, str]:
     
     if len(body) < MIN_BODY_LENGTH:
         return False, f"too short ({len(body)} chars, need {MIN_BODY_LENGTH})"
-    
+
+    words = re.findall(r"[a-z']+", body.lower())
+    unique_words = len(set(words))
+    if (
+        len(words) >= MIN_SPEECH_DIVERSITY_WORDS
+        and unique_words < MIN_UNIQUE_SPEECH_WORDS
+    ):
+        return False, (
+            f"insufficient speech diversity ({unique_words} unique words "
+            f"across {len(words)} words)"
+        )
+
+    body_bytes = body.encode("utf-8")
+    if len(body_bytes) >= MIN_REPETITIVE_BODY_BYTES:
+        compression_ratio = len(zlib.compress(body_bytes)) / len(body_bytes)
+        if compression_ratio < MIN_TRANSCRIPT_COMPRESSION_RATIO:
+            return False, (
+                "highly repetitive transcript "
+                f"(compression ratio {compression_ratio:.3f})"
+            )
+
     metadata = parse_transcript_header(filepath)
     if metadata.get('meeting_start') and metadata.get('meeting_end'):
         try:
