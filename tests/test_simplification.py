@@ -148,6 +148,7 @@ def test_note_calendar_status_and_time_matching(tmp_path, monkeypatch, calendar_
             return 0
 
     def generate(command, **kwargs):
+        assert command[command.index('--model') + 1] == 'gpt-6.1-sol'
         prompt = command[command.index('-p') + 1]
         captured['prompt'] = prompt
         output = re.search(r'temp-\S+\.org', prompt).group()

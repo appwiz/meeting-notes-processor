@@ -180,7 +180,7 @@ uv run run_summarization.py [OPTIONS]
 --workspace PATH    # Path to data repo (default: current directory)
 --target copilot    # Use GitHub Copilot CLI (default)
 --target gemini     # Use Google Gemini CLI
---model MODEL       # Specific model (e.g., claude-opus-4.5, gpt-5.2, gemini-2.0-flash-exp)
+--model MODEL       # Override the Copilot default: gpt-6.1-sol
 --prompt FILE       # Custom prompt template (default: see below)
 --git               # Commit results to git (for automation)
 ```

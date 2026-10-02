@@ -34,7 +34,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Copilot executable path - override with COPILOT_PATH env var for systemd/non-PATH contexts
 COPILOT_PATH = os.environ.get('COPILOT_PATH', 'copilot')
-DEFAULT_COPILOT_MODEL = 'gpt-5.6-terra'
+DEFAULT_COPILOT_MODEL = 'gpt-6.1-sol'
 CALENDAR_MAX_AGE_SECONDS = int(os.environ.get('CALENDAR_MAX_AGE_SECONDS', 6 * 60 * 60))
 
 

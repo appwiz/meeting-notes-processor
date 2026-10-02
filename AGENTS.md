@@ -152,7 +152,7 @@ When invoking `copilot` in non-interactive/programmatic mode (`-p` flag), you **
 copilot silently denies tool calls with "Permission denied" and exits 0 — producing no output.
 
 ```bash
-copilot -p "<prompt>" --allow-all-tools --allow-all-paths --model gpt-5.6-terra
+copilot -p "<prompt>" --allow-all-tools --allow-all-paths --model gpt-6.1-sol
 ```
 
 Do NOT use the more restrictive `--allow-tool write` — it only authorizes file writes,
