@@ -80,66 +80,19 @@ def load_prompt_template(prompt_file: str | None, workspace_dir: str) -> str:
         return f.read()
 
 
-def get_calendar_updated_at(
-    calendar_path: str,
-    *,
-    allow_untracked: bool = False,
-) -> float:
-    """Return the calendar's committed update time or trusted generated-file mtime."""
-    path = Path(calendar_path).resolve()
-    try:
-        worktree = subprocess.run(
-            ['git', '-C', str(path.parent), 'rev-parse', '--is-inside-work-tree'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if worktree.returncode != 0 or worktree.stdout.strip() != 'true':
-            return path.stat().st_mtime
-
-        tracked = subprocess.run(
-            ['git', '-C', str(path.parent), 'ls-files', '--error-unmatch', '--', path.name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if tracked.returncode != 0:
-            return path.stat().st_mtime if allow_untracked else 0
-
-        status = subprocess.run(
-            ['git', '-C', str(path.parent), 'status', '--porcelain', '--', path.name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if status.returncode != 0 or status.stdout.strip():
-            return 0
-
-        result = subprocess.run(
-            ['git', '-C', str(path.parent), 'log', '-1', '--format=%ct', '--', path.name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip().isdigit():
-            return float(result.stdout.strip())
-    except (OSError, subprocess.TimeoutExpired):
-        return 0
-    return 0
+def get_calendar_updated_at(calendar_path: str) -> float:
+    """Calendar publishers refresh mtime on every successful publication."""
+    return Path(calendar_path).stat().st_mtime
 
 
 def calendar_is_fresh(
     calendar_path: str,
     *,
     now: float | None = None,
-    allow_untracked: bool = False,
 ) -> tuple[bool, float]:
     """Reject calendar data old enough to make participant identity unsafe."""
     current_time = _time.time() if now is None else now
-    age_seconds = current_time - get_calendar_updated_at(
-        calendar_path,
-        allow_untracked=allow_untracked,
-    )
+    age_seconds = current_time - get_calendar_updated_at(calendar_path)
     return -300 <= age_seconds <= CALENDAR_MAX_AGE_SECONDS, age_seconds
 
 
@@ -153,7 +106,7 @@ def format_calendar_for_prompt(calendar_entries: list[dict], meeting_date: str) 
         time_str = f"{e['start_time']}-{e['end_time']}" if e['start_time'] else "all-day"
         participants = ', '.join(e['participants']) if e['participants'] else 'unknown'
         lines.append(f"{i}. [{time_str}] {e['title']}")
-        lines.append(f"   Participants: {participants}")
+        lines.append(f"   Invitees (not confirmed attendees): {participants}")
         if e['meeting_links']:
             lines.append(f"   Meeting link: {e['meeting_links'][0]}")
         lines.append("")
@@ -167,59 +120,34 @@ def build_calendar_aware_prompt(base_prompt: str, calendar_text: str, meeting_da
     calendar_instructions = f"""
 ## CALENDAR CONTEXT FOR {meeting_date}
 
-You have access to the user's calendar for this date. Use this to:
-1. IDENTIFY THE CORRECT PARTICIPANTS - transcription often mishears names
-2. Match the meeting to a calendar entry if possible
-3. Use the calendar to CORRECT speaker misidentification
+Use these calendar candidates to match meeting identity and correct name spelling
+when the transcript provides supporting evidence.
 
 {calendar_text}
 
 {notes_context}
 
-## CRITICAL: Participant Identification Strategy
+## Participant Identification
 
-The transcript speaker labels are OFTEN WRONG due to transcription errors. Use this logic:
+- Generic `[S]` markers indicate speaker changes, not identity. Explicit labels
+  like `[speaker:Edd]` are stronger identity hints than ordinary ASR guesses.
+- Calendar invitees help resolve identities, but an invitation does not prove attendance.
+  Include only participants supported by the conversation; do not copy the invite list.
+- Match by recording time and conversation, not calendar order. For overlapping
+  candidates, use self-reference and direct address; people mentioned are not
+  necessarily speakers. Recent notes are context, not proof of today's attendance.
+- A matching 1:1 slot plus a two-person conversation can identify the counterpart.
+  Do not invent a full name from a username or force a match when evidence conflicts.
+- Leave ambiguous speakers unidentified rather than assigning a plausible invitee.
 
-- Generic `[S]` markers only mean "speaker changed here" and do not identify anyone.
-- Explicit labels like `[speaker:Edd]` are machine-generated identity hints and are much
-  more reliable than ordinary transcript names or raw ASR guesses.
-- Calendar participants remain authoritative for the full participant list and for any
-  speakers who do not have an explicit `[speaker:Name]` label.
+## Naming and Metadata
 
-### Step 1: Cross-reference speakers with calendar
-- Look at who speaks in the transcript
-- Compare with calendar entries for this date/time
-- Calendar participant names are AUTHORITATIVE - trust them over transcript labels
+- For identified 1:1s with Edd, use "firstname-edd-1-1" slugs. For small groups,
+  use key names; for large meetings, use the meeting type.
+- Use the matched calendar title in the note heading; retain discussion topics
+  in the topic property and summary.
 
-### Step 2: Common transcription errors to watch for
-- "Kim" is often a mishearing of other names (Thabani, etc.)
-- Names may be phonetically similar but wrong
-- If transcript says "Kim" but calendar shows "Thabani 1:1" at that time, the speaker is Thabani
-
-### Step 3: Handling 1:1 meetings
-- Calendar format for 1:1s: "username / ewilderj 1:1" (e.g., "thabani11 / ewilderj 1:1")
-- The username maps to a person (thabani11 = Thabani)
-- If the transcript has 2 speakers and one is Edd, this is a 1:1
-
-### Step 3b: Disambiguating between multiple 1:1 candidates
-If there are multiple 1:1 meetings on the same day:
-- Look at WHO is describing THEIR OWN work/problems (not Edd)
-- The person describing their programs, their direct reports, their issues = that's the meeting counterpart
-- KEY INSIGHT: If someone says "I've been having issues with X and Y", the speaker is the COMPLAINANT, not X or Y
-- If they reference "my team", "my project", "my manager" - use those possessive phrases to identify the speaker
-- DURATION HINT: A very long, detailed transcript likely corresponds to a longer calendar slot
-- DO NOT just pick the first 1:1 in calendar order - use content clues to disambiguate
-- Cross-reference against calendar participants to find the match
-
-### Step 4: Slug naming based on CORRECTED participants
-- For 1:1 meetings: ALWAYS use "firstname-edd-1-1" format (e.g., "marion-edd-1-1", "thabani-edd-1-1")
-  - This is REQUIRED for any meeting with exactly 2 participants where one is Edd
-  - Do NOT use topic-based slugs for 1:1s, even if the topic is interesting
-- For small groups (3-4): include key names (e.g., "mia-brian-edd-tpm")  
-- For large meetings (5+): use meeting type, NOT names (e.g., "engineering-town-hall", "cip-slt-sync")
-
-### Step 5: Add calendar metadata to output
-If you match to a calendar entry, add these properties to the :PROPERTIES: drawer:
+Only when a calendar entry is confidently matched, add:
 - :CALENDAR_MATCH: <exact calendar title>
 - :CALENDAR_TIME: <HH:MM-HH:MM from calendar>
 - :MEETING_LINK: <video call URL if present>
@@ -1128,6 +1056,7 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     # Build the prompt - include calendar context if available
     final_prompt = prompt_template.format(input_file=input_relative, output_file=temp_org_filename)
     final_prompt = add_capture_mode_guidance(final_prompt, metadata)
+    day_entries = []
     
     if calendar_path and os.path.exists(calendar_path):
         # Parse calendar and filter to matching date
@@ -1142,7 +1071,8 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
                 print(f"  Calendar: Narrowed {len(day_entries)} entries to {len(time_filtered)} by time overlap")
                 day_entries = time_filtered
             else:
-                print(f"  Calendar: No time overlap matches, keeping all {len(day_entries)} entries for date")
+                print("  Calendar: No time overlap matches; not using unrelated meetings")
+                day_entries = []
         
         if day_entries:
             print(f"  Calendar: Found {len(day_entries)} entries for {meeting_date}")
@@ -1168,6 +1098,15 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
         else:
             print(f"  Calendar: No entries for {meeting_date}")
     
+    calendar_status = "context-provided" if calendar_path and day_entries else "unavailable"
+    if calendar_status == "unavailable":
+        final_prompt = (
+            "Calendar identity context is unavailable for this recording. "
+            "Do not guess names or a scheduled meeting title. Preserve explicit "
+            "speaker labels and leave unsupported identities unidentified.\n\n"
+            + final_prompt
+        )
+
     # Run summarization
     print(f"  Generating summary...")
 
@@ -1344,6 +1283,23 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     if not os.path.exists(temp_org_path):
         print(f"  Error: Expected org file {temp_org_path} was not created")
         return False, None, None
+
+    with open(temp_org_path, 'r', encoding='utf-8') as f:
+        org_content = f.read()
+    property_line = f":CALENDAR_STATUS: {calendar_status}"
+    org_content = re.sub(r"^:CALENDAR_STATUS:.*\n?", "", org_content, flags=re.MULTILINE)
+    if ':PROPERTIES:' in org_content:
+        org_content = org_content.replace(':PROPERTIES:', ':PROPERTIES:\n' + property_line, 1)
+    else:
+        print("  Error: Generated note has no property drawer for calendar status")
+        return False, None, None
+    if calendar_status == "unavailable":
+        org_content += (
+            "\nCalendar identity enrichment was unavailable; participant names "
+            "and meeting identity have not been verified against the calendar.\n"
+        )
+    with open(temp_org_path, 'w', encoding='utf-8') as f:
+        f.write(org_content)
     
     # Extract slug from the generated org file
     print("  Extracting slug from summary...")
@@ -1420,6 +1376,44 @@ def git_commit_changes(inbox_files, transcript_files, org_files, workspace_dir):
         print(f"  Error during git operations: {e}")
         return False
 
+def quarantine_transcript(input_file: str, workspace_dir: str, reason: str, use_git: bool) -> None:
+    quarantine_dir = Path(workspace_dir) / 'quarantine'
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(input_file)
+    source_tracked = False
+    if use_git:
+        result = subprocess.run(
+            ['git', 'ls-files', '--error-unmatch', '--', os.path.relpath(source, workspace_dir)],
+            cwd=workspace_dir, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode not in (0, 1):
+            raise RuntimeError(f"Cannot inspect quarantine source: {result.stderr.strip()}")
+        source_tracked = result.returncode == 0
+    destination = Path(ensure_unique_filename(str(quarantine_dir), source.stem, source.suffix[1:]))
+    reason_path = destination.with_suffix(destination.suffix + '.reason.txt')
+    with reason_path.open('x', encoding='utf-8') as f:
+        f.write(reason + '\n')
+    shutil.move(str(source), str(destination))
+    print(f"  Quarantined {source.name}: {reason} -> {destination}")
+    if use_git:
+        relative_paths = [
+            os.path.relpath(path, workspace_dir)
+            for path in ([source] if source_tracked else []) + [destination, reason_path]
+        ]
+        for command in (
+            ['git', 'add', '-A', '--', *relative_paths],
+            ['git', 'commit', '--only', '-m', f'Quarantine transcript: {source.name}', '--', *relative_paths],
+        ):
+            result = subprocess.run(
+                command, cwd=workspace_dir, capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip()
+                raise RuntimeError(
+                    f"Quarantine Git operation failed (exit {result.returncode}): {detail}"
+                )
+
+
 def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_template=None, debug=False, calendar_path=None):
     """Process all transcript files in the inbox directory.
     
@@ -1455,25 +1449,18 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     
     # --- Step 1: Filter junk transcripts ---
     skipped = 0
+    failed = 0
     filtered_files = []
     for transcript_file in transcript_files:
         worth_it, reason = is_transcript_worth_processing(transcript_file)
         if not worth_it:
             print(f"  Skipping {os.path.basename(transcript_file)}: {reason}")
-            skipped += 1
-            if use_git:
-                # Use git rm so deletion is tracked; if git fails, keep the file
-                workspace_abs = os.path.abspath(paths['workspace'])
-                rel_path = os.path.relpath(os.path.abspath(transcript_file), workspace_abs)
-                rm_result = subprocess.run(['git', 'rm', '-f', rel_path], capture_output=True, text=True, cwd=paths['workspace'])
-                if rm_result.returncode == 0:
-                    subprocess.run(['git', 'commit', '-m', f'Skip junk transcript: {os.path.basename(transcript_file)} ({reason})'],
-                                   capture_output=True, text=True, cwd=paths['workspace'])
-                else:
-                    # git rm failed — fall back to plain delete
-                    os.remove(transcript_file)
-            else:
-                os.remove(transcript_file)
+            try:
+                quarantine_transcript(transcript_file, paths['workspace'], reason, use_git)
+                skipped += 1
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
+                print(f"  Error quarantining {transcript_file}: {e}")
+                failed += 1
         else:
             filtered_files.append(transcript_file)
     
@@ -1500,14 +1487,13 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     if not final_files:
         if skipped:
             print(f"\nAll {skipped} transcript(s) were filtered as junk")
-        return 0, 0
+        return 0, failed
     
     if len(final_files) != len(filtered_files):
         print(f"  After splitting: {len(final_files)} file(s) to process")
     
     # --- Step 3: Process each transcript ---
     successful = 0
-    failed = 0
     
     for transcript_file in final_files:
         try:
@@ -1580,10 +1566,11 @@ def run_summarization():
     if not args.no_calendar:
         potential_calendar = get_calendar_path(paths['workspace'])
         if os.path.exists(potential_calendar):
-            fresh, age_seconds = calendar_is_fresh(
-                potential_calendar,
-                allow_untracked=bool(os.environ.get('CALENDAR_PATH')),
-            )
+            try:
+                fresh, age_seconds = calendar_is_fresh(potential_calendar)
+            except OSError as e:
+                print(f"Warning: Calendar enrichment unavailable: {potential_calendar}: {e}")
+                fresh, age_seconds = False, float('inf')
             if fresh:
                 calendar_path = potential_calendar
             else:

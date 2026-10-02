@@ -315,13 +315,13 @@ class RepoAgent:
         except Exception as e:
             return False, f"standalone processing failed: {e}"
 
-        if process.returncode != 0:
+        if process.returncode not in (0, 2):
             detail = ''.join(output_lines[-10:]).strip() or 'non-zero exit'
             if len(detail) > 500:
                 detail = detail[:500] + '...'
             return False, f"standalone processing failed (exit {process.returncode}, {elapsed}s): {detail}"
 
-        logger.info(f"Standalone processing completed in {elapsed}s")
+        logger.info(f"Standalone processing completed in {elapsed}s (exit {process.returncode})")
         return True, "standalone processing completed"
 
     def run_standalone_processing_async(self) -> None:

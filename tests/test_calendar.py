@@ -147,7 +147,7 @@ class TestFormatCalendarForPrompt:
         result = run_summarization.format_calendar_for_prompt(entries, '2026-01-26')
         
         assert '1. [09:00-09:30] Edd / Sarah 1:1' in result
-        assert 'Participants: Sarah Chen, Edd Wilder-James' in result
+        assert 'Invitees (not confirmed attendees): Sarah Chen, Edd Wilder-James' in result
         assert 'Meeting link: https://teams.example.com/abc' in result
 
     def test_formats_all_day_events(self):

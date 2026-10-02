@@ -43,17 +43,17 @@ meeting-bar-install:  ## Install meeting_bar.py as a launchd agent
 	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar installed and running" || echo "WARNING: service not loaded"
 
 meeting-bar-restart:  ## Restart meeting_bar.py launchd agent
+	@test -f ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) || { echo "Run make meeting-bar-install first"; exit 1; }
 	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
 	@sleep 1
-	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	@sleep 2
 	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar restarted" || echo "WARNING: service not loaded"
 
 meeting-bar-local:  ## Configure meeting_bar.py to send recording audio to the local transcriber
+	@test -f ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) || { echo "Run make meeting-bar-install first"; exit 1; }
 	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
 	@sleep 1
-	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	@plutil -replace EnvironmentVariables.TRANSCRIBER_TARGET_HOST -string 127.0.0.1 ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	@sleep 2
@@ -61,9 +61,9 @@ meeting-bar-local:  ## Configure meeting_bar.py to send recording audio to the l
 	@echo "meeting-bar target: local transcriber (127.0.0.1)"
 
 meeting-bar-pilot:  ## Configure meeting_bar.py to send recording audio to pilot
+	@test -f ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) || { echo "Run make meeting-bar-install first"; exit 1; }
 	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
 	@sleep 1
-	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	@plutil -replace EnvironmentVariables.TRANSCRIBER_TARGET_HOST -string pilot ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	@sleep 2
@@ -87,9 +87,9 @@ local-transcriber-install:  ## Install the local transcriber launchd agent
 	@launchctl list | grep -q $(LOCAL_TRANSCRIBER_LABEL) && echo "local transcriber installed and running" || echo "WARNING: local transcriber not loaded"
 
 local-transcriber-restart:  ## Restart the local transcriber launchd agent
+	@test -f ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) || { echo "Run make local-transcriber-install first"; exit 1; }
 	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) 2>/dev/null
 	@sleep 1
-	cp $(LOCAL_TRANSCRIBER_PLIST) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
 	@sleep 2
 	@launchctl list | grep -q $(LOCAL_TRANSCRIBER_LABEL) && echo "local transcriber restarted" || echo "WARNING: local transcriber not loaded"

@@ -67,7 +67,7 @@ Meeting transcripts accumulate rapidly but lack organization and context, making
 
 ### 6. Transcript Pre-Processing
 
-- **FR-6.1**: System filters out junk transcripts (too short or too brief) before LLM processing, avoiding wasted API calls
+- **FR-6.1**: System quarantines suspect transcripts (too short, too brief, or highly repetitive) before LLM processing, retaining original content and rejection reasons
 - **FR-6.2**: System detects back-to-back meetings in a single recording and splits them into separate files for individual processing
 - **FR-6.3**: Split files get interpolated timestamps from the original recording's YAML front matter
 - **FR-6.4**: File operations are atomic — original transcript is only removed after all split parts are written successfully
@@ -535,7 +535,7 @@ def enrich_with_calendar(notes_path, calendar_path, date_str):
 - **FR-7.4**: System adds calendar metadata properties to matched notes
 - **FR-7.5**: System preserves original AI-generated content (summary, actions, questions)
 - **FR-7.6**: System logs match decisions for debugging and audit
-- **FR-7.7**: Feature is optional and gracefully disabled if calendar.org missing
+- **FR-7.7**: Feature is optional; unavailable calendar context is explicitly marked in generated notes rather than silently producing unverified identities
 - **FR-7.8**: System handles multiple transcripts from same day correctly
 
 ### Testing Strategy

@@ -466,8 +466,8 @@ When a recently updated `calendar.org` exists in your data repo, `run_summarizat
 - Match transcripts to calendar entries by time and participants
 - Correct speaker misidentification in transcripts
 
-Calendar data older than six hours is ignored rather than treated as authoritative
-identity evidence. Set `CALENDAR_PATH` to use a calendar outside the data workspace,
+Calendar data older than six hours is ignored rather than used as identity
+evidence. Set `CALENDAR_PATH` to use a calendar outside the data workspace,
 or `CALENDAR_MAX_AGE_SECONDS` to change the safety window.
 - Add accurate meeting times and attendee information
 
@@ -482,7 +482,7 @@ The processor can cross-reference your calendar to improve meeting notes — cor
 1. Your calendar data lives as `calendar.org` in your data repo (org-mode format)
 2. When processing a transcript, the script finds calendar entries for that day
 3. Calendar context is included in the AI prompt so the LLM can:
-   - **Correct speaker names** — transcription often mishears names; calendar participants are authoritative
+   - **Correct speaker names** — use calendar spelling for identities supported by the conversation; invitees are not automatically attendees
    - **Match to the right meeting** — especially useful when you have multiple meetings per day
    - **Add metadata** — `:CALENDAR_MATCH:`, `:CALENDAR_TIME:`, and `:MEETING_LINK:` properties
 
@@ -506,10 +506,16 @@ The `calendar.org` file uses standard org-mode format. Each entry looks like:
 ### Enabling/Disabling
 
 Calendar integration is **enabled by default** when `calendar.org` exists in your
-data repo and its latest git commit is no more than six hours old. Outside a git
-repository, the file modification time is used. Stale calendar data is skipped
-with a warning. In a git repository, uncommitted or untracked calendar data is
-also rejected. Control calendar integration with CLI flags:
+data repo (or at `CALENDAR_PATH`) and its modification time is no more than six
+hours old. Publishers must refresh the file on each successful publication, even
+when content is unchanged. Git tracking, dirty status, and commit dates do not
+determine freshness. Future timestamps more than five minutes ahead are rejected.
+Missing, unreadable, or stale calendars are logged; notes without calendar context
+carry `:CALENDAR_STATUS: unavailable` and a visible identity-verification warning.
+Notes given calendar candidates carry `:CALENDAR_STATUS: context-provided`, which
+does not assert that a match was found. Precise recording times exclude unrelated
+calendar slots rather than falling back to every meeting that day.
+Control calendar integration with CLI flags:
 
 ```bash
 # Default: calendar enabled (if calendar.org exists)
@@ -518,9 +524,18 @@ uv run run_summarization.py --workspace ../my-meeting-notes
 # Explicitly disable
 uv run run_summarization.py --workspace ../my-meeting-notes --no-calendar
 
-# Explicitly enable (errors if calendar.org is missing)
+# Enable calendar context when available
 uv run run_summarization.py --workspace ../my-meeting-notes --calendar
 ```
+
+Transcripts rejected by length, duration, vocabulary, or repetition checks are
+moved to `quarantine/` with a `.reason.txt` companion; they are not deleted or
+summarized. Restore a transcript to `inbox/` after inspecting or correcting it.
+With `--git`, the move and reason are committed without including unrelated
+staged changes. A quarantine Git failure returns a processing failure and
+preserves the transcript on disk.
+The standalone daemon treats processor exit code `2` (nothing to summarize) as
+successful so quarantine-only commits can still be published.
 
 ### Updating Calendar Data
 

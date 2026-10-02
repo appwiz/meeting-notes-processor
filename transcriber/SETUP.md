@@ -209,6 +209,12 @@ Logs:
 make local-transcriber-logs
 ```
 
+`make local-transcriber-restart` and `make meeting-bar-restart` reload the
+installed plists without copying repository templates over your settings.
+The `meeting-bar-local` and `meeting-bar-pilot` targets change only the target
+host in the installed plist. Installation targets still copy templates; use
+them only for initial setup or an intentional configuration replacement.
+
 The local launchd agent is installed at:
 
 ```text

@@ -208,7 +208,7 @@ class TestCalendarFreshness:
 
             assert fresh is False
 
-    def test_rejects_untracked_calendar_inside_git_repo(self):
+    def test_accepts_recent_untracked_calendar_inside_git_repo(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             subprocess.run(['git', 'init', '-q'], cwd=tmpdir, check=True)
             calendar = Path(tmpdir) / 'calendar.org'
@@ -218,7 +218,7 @@ class TestCalendarFreshness:
                 str(calendar), now=calendar.stat().st_mtime + 60
             )
 
-            assert fresh is False
+            assert fresh is True
 
     def test_accepts_configured_untracked_calendar_inside_git_repo(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -229,13 +229,12 @@ class TestCalendarFreshness:
             fresh, age_seconds = run_summarization.calendar_is_fresh(
                 str(calendar),
                 now=calendar.stat().st_mtime + 60,
-                allow_untracked=True,
             )
 
             assert fresh is True
             assert age_seconds == pytest.approx(60)
 
-    def test_rejects_dirty_calendar_inside_git_repo(self):
+    def test_accepts_recent_published_calendar_regardless_of_git_status(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             subprocess.run(['git', 'init', '-q'], cwd=tmpdir, check=True)
             calendar = Path(tmpdir) / 'calendar.org'
@@ -262,7 +261,23 @@ class TestCalendarFreshness:
                 str(calendar), now=calendar.stat().st_mtime + 60
             )
 
-            assert fresh is False
+            assert fresh is True
+
+    def test_refreshing_identical_calendar_does_not_require_a_git_commit(self, tmp_path):
+        subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
+        calendar = tmp_path / 'calendar.org'
+        calendar.write_text('* Current meeting\n')
+        old = calendar.stat().st_mtime - 86400
+        os.utime(calendar, (old, old))
+        assert not run_summarization.calendar_is_fresh(str(calendar))[0]
+
+        calendar.write_text('* Current meeting\n')
+
+        assert run_summarization.calendar_is_fresh(str(calendar))[0]
+
+    def test_missing_calendar_surfaces_io_error(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            run_summarization.calendar_is_fresh(str(tmp_path / 'missing.org'))
 
 
 class TestWorkspaceArgumentParsing:

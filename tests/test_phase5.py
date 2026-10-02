@@ -261,6 +261,23 @@ class TestHookExecution:
 class TestStandaloneProcessing:
     """Tests for local standalone processing mode."""
 
+    @pytest.mark.parametrize("exit_code,expected_success", [(0, True), (2, True), (1, False)])
+    def test_processor_exit_codes(self, minimal_config, temp_workspace, exit_code, expected_success):
+        minimal_config["sync"]["enabled"] = False
+        minimal_config["processing"] = {
+            "standalone": {
+                "enabled": True,
+                "command": f'{sys.executable} -c "import sys; sys.exit({exit_code})"',
+                "working_directory": str(temp_workspace["workspace"]),
+                "timeout_seconds": 10,
+            }
+        }
+        agent = meetingnotesd.RepoAgent(minimal_config)
+
+        success, _ = agent.run_standalone_processing()
+
+        assert success is expected_success
+
     def test_standalone_processing_sets_workspace_and_cwd(self, minimal_config, temp_workspace):
         """Standalone processing runs in the configured cwd with WORKSPACE_DIR pointing at the data repo."""
         import meetingnotesd
