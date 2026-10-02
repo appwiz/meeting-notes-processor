@@ -80,8 +80,12 @@ def load_prompt_template(prompt_file: str | None, workspace_dir: str) -> str:
         return f.read()
 
 
-def get_calendar_updated_at(calendar_path: str) -> float:
-    """Return the calendar's last committed update time, or its mtime outside git."""
+def get_calendar_updated_at(
+    calendar_path: str,
+    *,
+    allow_untracked: bool = False,
+) -> float:
+    """Return the calendar's committed update time or trusted generated-file mtime."""
     path = Path(calendar_path).resolve()
     try:
         worktree = subprocess.run(
@@ -92,6 +96,15 @@ def get_calendar_updated_at(calendar_path: str) -> float:
         )
         if worktree.returncode != 0 or worktree.stdout.strip() != 'true':
             return path.stat().st_mtime
+
+        tracked = subprocess.run(
+            ['git', '-C', str(path.parent), 'ls-files', '--error-unmatch', '--', path.name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if tracked.returncode != 0:
+            return path.stat().st_mtime if allow_untracked else 0
 
         status = subprocess.run(
             ['git', '-C', str(path.parent), 'status', '--porcelain', '--', path.name],
@@ -115,10 +128,18 @@ def get_calendar_updated_at(calendar_path: str) -> float:
     return 0
 
 
-def calendar_is_fresh(calendar_path: str, *, now: float | None = None) -> tuple[bool, float]:
+def calendar_is_fresh(
+    calendar_path: str,
+    *,
+    now: float | None = None,
+    allow_untracked: bool = False,
+) -> tuple[bool, float]:
     """Reject calendar data old enough to make participant identity unsafe."""
     current_time = _time.time() if now is None else now
-    age_seconds = current_time - get_calendar_updated_at(calendar_path)
+    age_seconds = current_time - get_calendar_updated_at(
+        calendar_path,
+        allow_untracked=allow_untracked,
+    )
     return -300 <= age_seconds <= CALENDAR_MAX_AGE_SECONDS, age_seconds
 
 
@@ -1559,7 +1580,10 @@ def run_summarization():
     if not args.no_calendar:
         potential_calendar = get_calendar_path(paths['workspace'])
         if os.path.exists(potential_calendar):
-            fresh, age_seconds = calendar_is_fresh(potential_calendar)
+            fresh, age_seconds = calendar_is_fresh(
+                potential_calendar,
+                allow_untracked=bool(os.environ.get('CALENDAR_PATH')),
+            )
             if fresh:
                 calendar_path = potential_calendar
             else:

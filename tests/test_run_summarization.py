@@ -220,6 +220,21 @@ class TestCalendarFreshness:
 
             assert fresh is False
 
+    def test_accepts_configured_untracked_calendar_inside_git_repo(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(['git', 'init', '-q'], cwd=tmpdir, check=True)
+            calendar = Path(tmpdir) / 'calendar.org'
+            calendar.write_text('* Generated meeting\n')
+
+            fresh, age_seconds = run_summarization.calendar_is_fresh(
+                str(calendar),
+                now=calendar.stat().st_mtime + 60,
+                allow_untracked=True,
+            )
+
+            assert fresh is True
+            assert age_seconds == pytest.approx(60)
+
     def test_rejects_dirty_calendar_inside_git_repo(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             subprocess.run(['git', 'init', '-q'], cwd=tmpdir, check=True)
